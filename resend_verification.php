@@ -44,66 +44,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($currentDir == '/') { $currentDir = ''; }
     $verify_link = "$protocol://$host$currentDir/verify_email.php?token=$token";
 
-    // --- Send email via Brevo ---
-    $apiKey = getenv('BREVO_API_KEY');
-    if (!$apiKey) {
-        echo json_encode(["status" => "error", "message" => "Email service not configured. Please set BREVO_API_KEY."]);
-        exit;
-    }
-    $emailData = [
-        "sender" => [
-            "name" => "Arts Gym Portal",
-            "email" => "lancegarcia841@gmail.com"
-        ],
-        "to" => [[
-            "email" => $email,
-            "name" => $user['full_name']
-        ]],
-        "subject" => "Verify Your Email - Arts Gym",
-        "htmlContent" => "
-            <div style='font-family:Arial,sans-serif;padding:20px'>
-                <h2>Hi {$user['full_name']} 👋</h2>
-                <p>Please verify your email by clicking below:</p>
-                <a href='$verify_link'
-                   style='display:inline-block;background:#e63946;color:#fff;
-                   padding:12px 25px;text-decoration:none;border-radius:5px;font-weight:bold'>
-                   VERIFY EMAIL
-                </a>
-                <p style='margin-top:15px;font-size:12px;color:#777'>
-                    Or copy this link:<br>$verify_link
-                </p>
-            </div>
-        "
-    ];
+    $htmlContent = "
+        <div style='font-family:Arial,sans-serif;padding:20px'>
+            <h2>Hi {$user['full_name']} 👋</h2>
+            <p>Please verify your email by clicking below:</p>
+            <a href='$verify_link'
+               style='display:inline-block;background:#e63946;color:#fff;
+               padding:12px 25px;text-decoration:none;border-radius:5px;font-weight:bold'>
+               VERIFY EMAIL
+            </a>
+            <p style='margin-top:15px;font-size:12px;color:#777'>
+                Or copy this link:<br>$verify_link
+            </p>
+        </div>
+    ";
 
-    $ch = curl_init("https://api.brevo.com/v3/smtp/email");
-    curl_setopt_array($ch, [
-        CURLOPT_HTTPHEADER => [
-            "api-key: " . $apiKey,
-            "Content-Type: application/json",
-            "Accept: application/json"
-        ],
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => json_encode($emailData),
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_SSL_VERIFYHOST => 0,
-        CURLOPT_SSL_VERIFYPEER => 0
-    ]);
+    require_once __DIR__ . '/includes/brevo_send.php';
+    $result = brevo_send_email($email, $user['full_name'], "Verify Your Email - Arts Gym", $htmlContent);
 
-    $response = curl_exec($ch);
-    $curl_error = curl_error($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    if ($curl_error) {
-        echo json_encode(["status" => "error", "message" => "CURL error: $curl_error"]);
-        exit;
-    }
-
-    if ($httpCode === 201) {
+    if ($result['success']) {
         echo json_encode(["status" => "success", "message" => "Verification email resent!"]);
     } else {
-        echo json_encode(["status" => "error", "message" => "Failed to resend verification email"]);
+        echo json_encode(["status" => "error", "message" => $result['message']]);
     }
     exit;
 }

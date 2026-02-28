@@ -67,41 +67,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($currentDir == '/') { $currentDir = ''; }
 
         $verify_link = "$protocol://$host$currentDir/verify_email.php?token=$verification_token";
-        // IMPORTANT: Ensure this API key is copied correctly from your Brevo Dashboard
-        $apiKey = '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';
-        
-        $emailData = [
-            "sender" => ["name" => "Arts Gym Portal", "email" => "lancegarcia841@gmail.com"],
-            "to" => [["email" => $email, "name" => $full_name]],
-            "subject" => "Verify Your Email - Arts Gym",
-            "htmlContent" => "<h3>Hi $full_name,</h3><p>Please click the button to verify your account:</p><a href='$verify_link' style='background:#e63946;color:#fff;padding:12px 25px;text-decoration:none;border-radius:5px;display:inline-block;'>VERIFY MY ACCOUNT</a>"
-        ];
+        $htmlContent = "<h3>Hi $full_name,</h3><p>Please click the button to verify your account:</p><a href='$verify_link' style='background:#e63946;color:#fff;padding:12px 25px;text-decoration:none;border-radius:5px;display:inline-block;'>VERIFY MY ACCOUNT</a>";
 
-        // --- SEND VIA CURL ---
-        $ch = curl_init("https://api.brevo.com/v3/smtp/email");
-        curl_setopt_array($ch, [
-            CURLOPT_HTTPHEADER => [
-                "api-key: " . $apiKey,
-                "Content-Type: application/json",
-                "Accept: application/json"
-            ],
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => json_encode($emailData),
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_SSL_VERIFYHOST => 0, // Helps connection on some free hosts
-            CURLOPT_SSL_VERIFYPEER => 0
-        ]);
+        require_once __DIR__ . '/includes/brevo_send.php';
+        $result = brevo_send_email($email, $full_name, "Verify Your Email - Arts Gym", $htmlContent);
 
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-
-        if ($httpCode >= 200 && $httpCode < 300) {
+        if ($result['success']) {
             echo json_encode(["status" => "success", "message" => "Registration successful! Check your email."]);
         } else {
-            $apiRes = json_decode($response, true);
-            $reason = $apiRes['message'] ?? 'Check Brevo Sender settings.';
-            echo json_encode(["status" => "error", "message" => "Email failed: " . $reason]);
+            echo json_encode(["status" => "error", "message" => "Email failed: " . $result['message']]);
         }
 
     } catch (PDOException $e) {

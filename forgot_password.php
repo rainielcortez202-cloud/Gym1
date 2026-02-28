@@ -53,49 +53,24 @@ if ($currentDir == '/') { $currentDir = ''; }
 
 $reset_link = "$protocol://$host$currentDir/reset_password.php?token=$reset_token";
 
-// --- SEND EMAIL VIA BREVO ---
-$apiKey = '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';
+$htmlContent = "
+    <div style='font-family: Arial, sans-serif; padding:20px; border:1px solid #eee'>
+        <h2 style='color:#e63946'>Password Reset Request</h2>
+        <p>Hi {$user['full_name']},</p>
+        <p>You requested to reset your password. Click the button below:</p>
+        <a href='$reset_link' style='background:#e63946;color:#fff;padding:12px 25px;text-decoration:none;border-radius:5px;display:inline-block;font-weight:bold'>RESET PASSWORD</a>
+        <p style='font-size:12px;color:#777;margin-top:15px'>Or copy this link:<br>$reset_link</p>
+        <hr>
+        <p style='color:#d9534f; font-weight:bold;'>⚠️ IMPORTANT: This link will expire in 1 hour.</p>
+    </div>
+";
 
-$emailData = [
-    "sender" => ["name" => "Arts Gym Portal", "email" => "lancegarcia841@gmail.com"],
-    "to" => [["email" => $email, "name" => $user['full_name']]],
-    "subject" => "Reset Your Password - Arts Gym",
-    "htmlContent" => "
-        <div style='font-family: Arial, sans-serif; padding:20px; border:1px solid #eee'>
-            <h2 style='color:#e63946'>Password Reset Request</h2>
-            <p>Hi {$user['full_name']},</p>
-            <p>You requested to reset your password. Click the button below:</p>
-            <a href='$reset_link' style='background:#e63946;color:#fff;padding:12px 25px;text-decoration:none;border-radius:5px;display:inline-block;font-weight:bold'>RESET PASSWORD</a>
-            <p style='font-size:12px;color:#777;margin-top:15px'>Or copy this link:<br>$reset_link</p>
-            <hr>
-            <p style='color:#d9534f; font-weight:bold;'>⚠️ IMPORTANT: This link will expire in 1 hour.</p>
-        </div>
-    "
-];
+require_once __DIR__ . '/includes/brevo_send.php';
+$result = brevo_send_email($email, $user['full_name'], "Reset Your Password - Arts Gym", $htmlContent);
 
-$ch = curl_init("https://api.brevo.com/v3/smtp/email");
-curl_setopt_array($ch, [
-    CURLOPT_HTTPHEADER => [
-        "api-key: " . $apiKey,
-        "Content-Type: application/json",
-        "Accept: application/json"
-    ],
-    CURLOPT_POST => true,
-    CURLOPT_POSTFIELDS => json_encode($emailData),
-    CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_SSL_VERIFYHOST => 0, 
-    CURLOPT_SSL_VERIFYPEER => 0
-]);
-
-$response = curl_exec($ch);
-$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-curl_close($ch);
-
-if ($httpCode >= 200 && $httpCode < 300) {
+if ($result['success']) {
     echo json_encode(["status" => "success", "message" => "Password reset link sent to $email"]);
 } else {
-    $apiRes = json_decode($response, true);
-    $reason = $apiRes['message'] ?? 'Unknown Error';
-    echo json_encode(["status" => "error", "message" => "Brevo Error: $reason"]);
+    echo json_encode(["status" => "error", "message" => "Brevo Error: " . $result['message']]);
 }
 ?>
