@@ -1,0 +1,157 @@
+# ARTS GYM: Comprehensive System Reviewer
+
+This document serves as an exhaustive, deep-dive review of the Arts Gym web application system. It acts as a primary resource for on-boarding, auditing, and continuous development, evaluating the system from the perspective of a senior software architect.
+
+---
+
+## 1. Executive Summary
+
+Arts Gym is a role-based, multi-tenant gym management system. It facilitates user registration, subscription tracking, point-of-sale functionality, and attendance monitoring primarily via QR code scanning. The application is built using a hybrid architecture, relying on a traditional PHP backend for server-side operations and routing, but leveraging Supabase (PostgreSQL) as its primary data store and real-time backend. 
+
+**Key Strengths:**
+*   Strong emphasis on security (CSRF protection, session hardening, bruteforce prevention).
+*   Clean utilization of Bootstrap 5 with customized CSS variable theming, including a robust dark mode implementation.
+*   Advanced usage of Supabase for both core Postgres functionalities and Row Level Security (RLS) layers.
+
+---
+
+## 2. Technology Stack & Libraries
+
+### Backend
+*   **PHP (7.4/8.x):** Powers the core application logic, routing, and server-side rendering.
+*   **PDO (PHP Data Objects):** Used for secure, prepared statement interactions with Postgres.
+*   **phpqrcode (qrlib.php):** A vintage but highly effective vendor library utilized in [generate_qr.php](file:///c:/xampp/htdocs/Gym1/generate_qr.php) to render PNG QR codes on-the-fly.
+
+### Database
+*   **PostgreSQL (Hosted on Supabase):** Port `6543` used with `sslmode=require` for secure direct database connections.
+*   **Supabase Realtime & Auth SDK:** Included via CDN to synchronize client-side state and provide advanced PostgreSQL features like Full-Text Search (FTS).
+
+### Frontend
+*   **HTML5 / CSS3:** Using modern utility classes and custom properties (`:root`).
+*   **Bootstrap 5.3.2:** Primary CSS framework used for grid layouts, modals, and responsive utilities.
+*   **Bootstrap Icons (1.11.1):** Used for scalable SVG iconography.
+*   **jQuery (3.6.0):** Used extensively for DOM manipulation, AJAX requests, and bridging the gap between Bootstrap components and PHP endpoints.
+*   **Google Fonts:** `Oswald` (Heads/Titles) and `Poppins`/`Inter` (Body Text).
+*   **html2canvas & jspdf (Client-side):** Used in the [admin/reports.php](file:///c:/xampp/htdocs/Gym1/admin/reports.php) module to generate downloadable PDF reports on the client side without server overhead.
+
+### External APIs
+*   **Brevo (Sendinblue) API v3:** Used via cURL in [login.php](file:///c:/xampp/htdocs/Gym1/login.php) to dispatch HTML-formatted Official Receipts via email upon successful membership fee verification.
+
+---
+
+## 3. Architecture & Directory Structure
+
+The system follows a modular, directory-based routing paradigm typical of traditional PHP applications:
+
+*   **`/` (Root):** Public-facing pages ([index.php](file:///c:/xampp/htdocs/Gym1/index.php), [about.php](file:///c:/xampp/htdocs/Gym1/about.php), [contact.php](file:///c:/xampp/htdocs/Gym1/contact.php), [register.php](file:///c:/xampp/htdocs/Gym1/register.php)), Authentication interfaces ([login.php](file:///c:/xampp/htdocs/Gym1/login.php), [auth.php](file:///c:/xampp/htdocs/Gym1/auth.php), [logout.php](file:///c:/xampp/htdocs/Gym1/logout.php), password reset flows), and utility endpoints ([generate_qr.php](file:///c:/xampp/htdocs/Gym1/generate_qr.php), [global_clock.php](file:///c:/xampp/htdocs/Gym1/global_clock.php), [connection.php](file:///c:/xampp/htdocs/Gym1/connection.php)).
+*   **`/admin/`:** Restricted to `role='admin'`. Contains comprehensive dashboards, user management (`manage_users.php`), global attendance logs (`attendance.php`), walk-in management (`daily.php`), and analytics (`reports.php`).
+*   **`/staff/`:** Restricted to `role='staff'`. Similar to admin but generally lacks destructive actions (like mass deleting users). Includes POS and local attendance registration.
+*   **`/member/`:** Restricted to `role='member'`. Contains the member's personal dashboard, workout tracking, calorie calculators, and their unique QR code pass.
+*   **`/includes/`:** Core configuration and global functionality. Contains the crucial `security.php` layer, `supabase_config.php`, and `status_sync.php`.
+*   **`/assets/`:** Houses static assets (`css/`, `js/`, images).
+*   **`/vendor/`:** Houses third-party PHP libraries (`phpqrcode`).
+
+---
+
+## 4. Database Schema & Models
+
+The Supabase PostgreSQL database schemas observed through the codebase:
+
+1.  **`users`**: The central identity table (`id`, `full_name`, `email`, `password`, `role`, `login_attempts`, `lockout_until`, `status`, `qr_code`). Augmented with a generated `tsvector` column (`fts`) for high-performance Full-Text Search.
+2.  **`sales`**: Tracks transactions/subscriptions (`id`, `user_id`, `amount`, `sale_date`, `expires_at`). `user_id` can be NULL for anonymous walk-ins.
+3.  **`attendance`**: Tracks check-ins (`id`, `user_id`, `visitor_name`, `date`, `time_in`, `attendance_date`).
+4.  **`walk_ins`**: Granular tracking for daily non-member visitors (`visitor_name`, `amount`, `checked_in_by`, `visit_date`).
+5.  **`activity_log`**: Audit trail table capturing user IP, role, and actions (`user_id`, `role`, `action`, `details`, `ip_address`, `created_at`).
+6.  **`settings`**: A minimal Key-Value store table (`setting_key`, `setting_value`) used for dynamic system configurations (e.g., `daily_walkin_rate`).
+
+---
+
+## 5. Securities Imbued (In-Depth Analysis)
+
+The system exhibits an exceptionally robust security posture, primarily centralized in `includes/security.php` and enforced globally.
+
+### 5.1 Global Headers & Content Security Policy (CSP)
+*   `X-Frame-Options: SAMEORIGIN`: Mitigates clickjacking.
+*   `X-Content-Type-Options: nosniff`: Prevents MIME type sniffing vulnerabilities.
+*   `X-XSS-Protection: 1; mode=block`: Legacy browser XSS mitigation.
+*   `Content-Security-Policy`: Strictly defines approved origins for scripts, styles, fonts, and connects (whitelisting `cdn.jsdelivr.net`, `supabase.co`, `brevo.com`).
+
+### 5.2 Session Hardening
+*   Session cookies are configured with `httponly = true` (preventing JS access/XSS harvesting), `samesite = 'Lax'` (CSRF mitigation), and `secure = true` (enforcing HTTPS transmission if available).
+*   `session_regenerate_id(true)` is called upon successful login to prevent Session Fixation attacks.
+
+### 5.3 Cross-Site Request Forgery (CSRF) Protection
+*   PHP generates a 32-byte cryptographically secure random token (`bin2hex(random_bytes(32))`) stored in `$_SESSION['csrf_token']`.
+*   A `csrf_field()` function outputs a hidden input for forms.
+*   A `csrf_script()` injects the token into jQuery's `$.ajaxSetup` headers, fortifying all asynchronous POST requests.
+*   The `validate_csrf()` function uses `hash_equals()` to prevent timing attacks.
+
+### 5.4 Cross-Site Scripting (XSS) & Input Sanitization
+*   Outputs are escaped using a custom helper `e($string)` wrapping `htmlspecialchars(..., ENT_QUOTES, 'UTF-8')`.
+*   **Global Truncation Layer:** `$_POST`, `$_GET`, and `$_REQUEST` arrays are traversed recursively. Any string exceeding 255 characters is truncated immediately upon application boot. This is a highly aggressive but effective buffer overflow and database column size limit protection.
+
+### 5.5 Authentication & Bruteforce Mitigation
+*   Passwords are hashed utilizing PHP's native `password_verify` and `password_hash` hooks (bcrypt).
+*   Client-side regex enforces passwords to have 8+ chars, 1 uppercase, and 1 symbol.
+*   `login.php` implements an intelligent **Account Lockout Mechanism**. It tracks `login_attempts` in Postgres. After 5 failed attempts, the `lockout_until` timestamp is set to `CURRENT_TIMESTAMP + 5 minutes`, refusing further login processing until the time expires.
+
+### 5.6 Row Level Security (RLS) via Supabase
+*   As defined in `supabase_setup.sql`, Postgres RLS is enabled globally.
+*   Policies ensure `users` and `attendance` rows can only be `SELECT`ed by the authenticated `auth.uid()` that owns them, while roles defined as `admin` bypass these using `exists` subqueries.
+
+### 5.7 Upload Size & Type Constraints
+*   `$_FILES` arrays are globally inspected recursively. Any file exceeding 5MB triggers an immediate script termination (`die()`), preventing bandwidth exhaustion and disk swelling DOS attacks.
+
+---
+
+## 6. Core Mechanics & Functionalities
+
+### 6.1 Authentication & Status Sync (auth.php)
+*   Acts as the primary gatekeeper. Included at the top of protected pages.
+*   If a user's role is `member`, the system dynamically checks the `sales` table for their `expires_at` date. If expired, their session is aggressively destroyed (`session_destroy()`, cookie clearing) and they are bounced back to the login page with a `restricted=1` flag.
+*   This enforces a "No Pay, No Play" rule directly at the HTTP routing level.
+
+### 6.2 Point of Sale & Walk-ins (daily.php & register_payment.php)
+*   **Walk-ins:** Handled dynamically via `daily.php`. Uses a transactional approach (`$pdo->beginTransaction()`). When a walk-in is recorded, it concurrently inserts into `walk_ins`, logs $X amount into `sales` (with NULL `user_id`), adds an entry to `attendance`, and logs the action in `activity_log`.
+*   **Dynamic Rates:** The walk-in fee is dynamically fetched and updated via the `settings` table, meaning admins do not have to touch PHP to adjust prices.
+
+### 6.3 Member Management (manage_users.php)
+*   Employs advanced SQL (CTEs / `WITH`) to fetch the latest expiry dates from the `sales` table joined against the `users` table.
+*   Features paginated tables (10 results per page) executed purely via SQL `LIMIT` and `OFFSET` for memory efficiency.
+*   Utilizes a clever frontend toggle to ping Supabase's Native `search_users` RPC function. If Supabase is available, it uses blazing-fast `tsvector` FTS, falling back to jQuery `.filter` DOM searching if the network is down.
+
+### 6.4 QR Code Generator (generate_qr.php)
+*   Takes a `$_GET['data']` string.
+*   Before emitting the binary PNG image headers, it utilizes `ob_get_length()` and `ob_clean()` to aggressively strip out any accidental whitespaces or UTF-8 BOMs that might have been emitted by imported files, guaranteeing the PNG header isn't corrupted.
+
+### 6.5 Receipt Email Generation
+*   Embedded directly within `login.php`. If a member successfully logs in and their fee is active, the system connects via REST to the Brevo API and fires off an HTML-formatted Official Receipt utilizing data parsed directly from the `sales` table.
+
+---
+
+## 7. Frontend Architecture & Styling Concept
+
+### 7.1 "App-Like" Modern Containerization
+The frontend leans heavily into a bespoke, modern "Glassmorphism / Dark Mode First" aesthetic, overriding standard Bootstrap.
+*   **CSS Variables (Tokens):** Defined extensively in `:root`. Standardized palette: `--primary-red`, `--dark-bg`, `--card-bg`, `--text-muted`.
+*   **Dynamic Theming:** Supports dark and light toggling. JS sets a localized `theme=dark` cookie. PHP reads `$_COOKIE['theme']` globally to append the `dark-mode-active` class to the `<body>` tag, enabling Zero-FOUC (Flash of Unstyled Content) theme loading.
+
+### 7.2 Component Design
+*   **Modals & Alerts:** Styled to remove hard borders, utilizing deep box-shadows (`box-shadow: 0 10px 30px rgba(...)`) and micro-animations for appearance (`@keyframes fadeIn`).
+*   **Structure:** Utilizes a standard fixed sidebar (`_sidebar.php`) paired with a fluid `#main` container. Javascript handles toggling `.collapsed` and `.expanded` classes to create smooth transition animations when maximizing screen real estate.
+*   **Pills & Badges:** Heavy use of soft-colored backgrounds with deeply saturated text for status indicators (e.g., `bg-success-subtle text-success`).
+
+---
+
+## 8. Senior Architect Recommendations & Vulnerabilities Noted
+
+While the system is heavily fortified, a few architectural improvements can be considered:
+
+1.  **Email API Key Hardcoding:** In `login.php`, the Brevo API Key (`xkeysib-...`) is hardcoded in plain text. This should be moved to an `.env` file or the unified database `settings` table to prevent credential leakage.
+2.  **Monolithic Fat Controllers:** The `login.php` file is nearly 700 lines long, handling HTML rendering, API JSON responses, Database querying, brutal state logic, and cURL Email executing. Extracting the authentication matrix and email dispatching into external Service Classes (e.g., `AuthService.php`, `EmailService.php`) will vastly improve maintainability.
+3.  **Error Handling Leakage Constraint:** In `connection.php`, the `try-catch` block checks `$_SERVER['SERVER_NAME'] == 'localhost'`. This is decent, but checking a dedicated `ENVIRONMENT` variable (`dev` vs `prod`) is a safer approach than relying on server headers which can sometimes be spoofed or misconfigured in staging environments.
+4.  **Redundant SQL Logic:** Complex subqueries joining `users` to maximum `expires_at` in `sales` are repeated across `auth.php`, `manage_users.php`, and `reports.php`. Creating a PostgreSQL View (e.g., `vw_user_status`) would drastically DRY (Don't Repeat Yourself) the codebase and shift computation overhead directly entirely to the database engine. 
+
+---
+**Review Summary:** 
+The Arts Gym application is solidly built. It successfully meshes old-school PHP stability with modern Database techniques (Supabase realtime/RLS) and enforces strict interface boundaries. Its security implementations relating to Bruteforcing and CSRF are well above average for standard PHP implementations.
