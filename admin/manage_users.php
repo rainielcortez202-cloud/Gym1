@@ -9,8 +9,9 @@ if ($_SESSION['role'] !== 'admin') { header("Location: ../login.php"); exit; }
 $current = basename($_SERVER['PHP_SELF']);
 $filter = $_GET['filter'] ?? 'all';
 
-// --- BULK SYNC STATUS WITH DATABASE ---
-bulkSyncMembers($pdo);
+// --- SELECTIVE SYNCING FOR PERFORMANCE ---
+// Instead of bulkSyncMembers($pdo), we sync only the members we're about to show.
+// Move this below the member fetching logic.
 
 // --- PAGINATION (Max 10 per request) ---
 $m_page = isset($_GET['m_page']) ? max(1, (int)$_GET['m_page']) : 1;
@@ -19,48 +20,88 @@ $limit = 10;
 $m_offset = ($m_page - 1) * $limit;
 $s_offset = ($s_page - 1) * $limit;
 
-// --- ROBUST POSTGRESQL MEMBER QUERY ---
-if ($filter === 'expiring') {
-    $m_sql = "
-        WITH LatestSales AS (
-            SELECT user_id, MAX(expires_at) as latest_expiry 
-            FROM sales 
-            WHERE user_id IS NOT NULL
-            GROUP BY user_id
-        )
-        SELECT u.*, ls.latest_expiry 
-        FROM users u 
-        JOIN LatestSales ls ON u.id = ls.user_id 
-        WHERE u.role = 'member' 
-        AND u.status = 'active'
-        AND ls.latest_expiry >= CURRENT_TIMESTAMP 
-        AND ls.latest_expiry <= (CURRENT_TIMESTAMP + INTERVAL '7 days')
-        ORDER BY ls.latest_expiry ASC
-    ";
-    $m_total = $pdo->query("
-        WITH LatestSales AS (SELECT user_id, MAX(expires_at) as latest_expiry FROM sales WHERE user_id IS NOT NULL GROUP BY user_id)
-        SELECT COUNT(*) FROM users u JOIN LatestSales ls ON u.id = ls.user_id 
-        WHERE u.role = 'member' AND u.status = 'active'
-        AND ls.latest_expiry >= CURRENT_TIMESTAMP AND ls.latest_expiry <= (CURRENT_TIMESTAMP + INTERVAL '7 days')
-    ")->fetchColumn();
-} else {
-    $m_sql = "
-        SELECT u.*, s.latest_expiry FROM users u 
-        LEFT JOIN (SELECT user_id, MAX(expires_at) as latest_expiry FROM sales GROUP BY user_id) s ON u.id = s.user_id 
-        WHERE u.role = 'member' 
-        ORDER BY u.id DESC
-    ";
-    $m_total = $pdo->query("SELECT COUNT(*) FROM users WHERE role = 'member'")->fetchColumn();
+// --- SEARCH LOGIC ---
+$m_search = $_GET['m_search'] ?? '';
+$s_search = $_GET['s_search'] ?? '';
+
+// --- SORT LOGIC ---
+$m_sort = $_GET['m_sort'] ?? 'newest';
+$s_sort = $_GET['s_sort'] ?? 'newest';
+
+function getOrderBy($sort) {
+    if ($sort === 'oldest') return "u.id ASC";
+    if ($sort === 'az') return "u.full_name ASC";
+    if ($sort === 'za') return "u.full_name DESC";
+    return "u.id DESC"; // newest
 }
 
-$s_total = $pdo->query("SELECT COUNT(*) FROM users WHERE role = 'staff'")->fetchColumn();
+$m_order = getOrderBy($m_sort);
+$s_order = getOrderBy($s_sort);
+
+// --- ROBUST POSTGRESQL MEMBER QUERY USING LATERAL JOIN ---
+if ($filter === 'expiring') {
+    $m_sql_base = "
+        FROM users u 
+        JOIN LATERAL (
+            SELECT expires_at as latest_expiry 
+            FROM sales 
+            WHERE user_id = u.id 
+            ORDER BY expires_at DESC 
+            LIMIT 1
+        ) ls ON true 
+        WHERE u.role = 'member' AND u.status = 'active'
+        AND ls.latest_expiry >= CURRENT_TIMESTAMP AND ls.latest_expiry <= (CURRENT_TIMESTAMP + INTERVAL '7 days')
+    ";
+    if ($m_search) {
+        $m_sql_base .= " AND (u.full_name ILIKE " . $pdo->quote('%' . $m_search . '%') . " OR u.email ILIKE " . $pdo->quote('%' . $m_search . '%') . ")";
+    }
+    
+    $m_sql = "SELECT u.*, ls.latest_expiry " . $m_sql_base . " ORDER BY ls.latest_expiry ASC";
+    $m_total = $pdo->query("SELECT COUNT(*) " . $m_sql_base)->fetchColumn();
+} else {
+    $m_sql_base = "
+        FROM users u 
+        LEFT JOIN LATERAL (
+            SELECT expires_at as latest_expiry 
+            FROM sales 
+            WHERE user_id = u.id 
+            ORDER BY expires_at DESC 
+            LIMIT 1
+        ) s ON true 
+        WHERE u.role = 'member'
+    ";
+    if ($m_search) {
+        $m_sql_base .= " AND (u.full_name ILIKE " . $pdo->quote('%' . $m_search . '%') . " OR u.email ILIKE " . $pdo->quote('%' . $m_search . '%') . ")";
+    }
+    
+    $m_sql = "SELECT u.*, s.latest_expiry " . $m_sql_base . " ORDER BY $m_order";
+    $m_total = $pdo->query("SELECT COUNT(*) " . $m_sql_base)->fetchColumn();
+}
+
+$s_sql_base = "FROM users u WHERE u.role='staff'";
+if ($s_search) {
+    $s_sql_base .= " AND (u.full_name ILIKE " . $pdo->quote('%' . $s_search . '%') . " OR u.email ILIKE " . $pdo->quote('%' . $s_search . '%') . ")";
+}
+$s_total = $pdo->query("SELECT COUNT(*) " . $s_sql_base)->fetchColumn();
 
 $m_total_pages = ceil($m_total / $limit);
 $s_total_pages = ceil($s_total / $limit);
 
 $m_sql .= " LIMIT $limit OFFSET $m_offset";
 $members = $pdo->query($m_sql)->fetchAll(PDO::FETCH_ASSOC);
-$staffs  = $pdo->query("SELECT * FROM users WHERE role='staff' ORDER BY id DESC LIMIT $limit OFFSET $s_offset")->fetchAll(PDO::FETCH_ASSOC);
+
+// --- SYNC ONLY VISIBLE MEMBERS ---
+if (!empty($members)) {
+    foreach ($members as &$m) {
+        $calculated_active = ($m['latest_expiry'] && strtotime($m['latest_expiry']) > time());
+        $new_status = $calculated_active ? 'active' : 'inactive';
+        if ($m['status'] !== $new_status) {
+            $pdo->prepare("UPDATE users SET status = ? WHERE id = ?")->execute([$new_status, $m['id']]);
+            $m['status'] = $new_status;
+        }
+    }
+}
+$staffs  = $pdo->query("SELECT u.* " . $s_sql_base . " ORDER BY $s_order LIMIT $limit OFFSET $s_offset")->fetchAll(PDO::FETCH_ASSOC);
 
 function maskEmailPHP($email) {
     if (!$email) return 'N/A';
@@ -74,6 +115,77 @@ function maskEmailPHP($email) {
         $maskedName = substr($name, 0, 2) . str_repeat('*', $len - 3) . substr($name, -1); 
     }
     return $maskedName . "@" . $parts[1];
+}
+
+// --- AJAX HANDLER FOR LIVE SEARCH (MEMBERS & STAFF) ---
+if (isset($_GET['ajax_m']) || isset($_GET['ajax_s'])) {
+    ob_start();
+    if (isset($_GET['ajax_m'])) {
+        if (empty($members)) {
+            echo '<tr><td colspan="5" class="text-center text-muted py-4">No members found matching "' . htmlspecialchars($m_search) . '"</td></tr>';
+        } else {
+            foreach($members as $m): 
+                $latest = $m['latest_expiry'];
+                $is_active = ($m['status'] === 'active');
+                $qr_data = $m['qr_code'] ?: $m['id'];
+                ?>
+                <tr>
+                    <td class="fw-bold name-cell"><?= htmlspecialchars($m['full_name']) ?></td>
+                    <td style="font-family: monospace; color: #666;"><?= maskEmailPHP($m['email']) ?></td>
+                    <td class="text-center"><button class="btn btn-sm btn-outline-dark border-0" onclick="viewQR('<?= $qr_data ?>','<?= addslashes($m['full_name']) ?>')"><i class="bi bi-qr-code fs-5"></i></button></td>
+                    <td><span class="badge <?= $is_active?'bg-success-subtle text-success':'bg-danger-subtle text-danger' ?> border px-3"><?= $is_active?'Active':'Inactive' ?></span></td>
+                    <td>
+                        <?php if (!$is_active): ?>
+                            <div class="d-flex gap-2">
+                                <select class="form-select form-select-sm rate-select" style="width: 130px;"><option value="400">Student (400)</option><option value="500" selected>Regular (500)</option></select>
+                                <button class="btn btn-dark btn-sm fw-bold" onclick="pay(<?= $m['id'] ?>, this)">PAY</button>
+                            </div>
+                        <?php else: ?>
+                            <small class="fw-bold text-success text-uppercase">Until: <?= date('M d, Y', strtotime($m['latest_expiry'])) ?></small>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+            <?php endforeach;
+        }
+        $rows = ob_get_clean();
+        ob_start();
+        if ($m_total_pages > 1): ?>
+            <ul class="pagination pagination-sm justify-content-center mb-0">
+                <li class="page-item <?= ($m_page <= 1) ? 'disabled' : '' ?>"><a class="page-link" href="?filter=<?= $filter ?>&m_sort=<?= $m_sort ?>&s_sort=<?= $s_sort ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>&m_page=<?= $m_page-1 ?>&s_page=<?= $s_page ?>">Previous</a></li>
+                <?php for($i=1; $i<=$m_total_pages; $i++): ?><li class="page-item <?= ($i == $m_page) ? 'active' : '' ?>"><a class="page-link" href="?filter=<?= $filter ?>&m_sort=<?= $m_sort ?>&s_sort=<?= $s_sort ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>&m_page=<?= $i ?>&s_page=<?= $s_page ?>"><?= $i ?></a></li><?php endfor; ?>
+                <li class="page-item <?= ($m_page >= $m_total_pages) ? 'disabled' : '' ?>"><a class="page-link" href="?filter=<?= $filter ?>&m_sort=<?= $m_sort ?>&s_sort=<?= $s_sort ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>&m_page=<?= $m_page+1 ?>&s_page=<?= $s_page ?>">Next</a></li>
+            </ul>
+        <?php endif;
+        $pagination = ob_get_clean();
+    } else {
+        if (empty($staffs)) {
+            echo '<tr><td colspan="3" class="text-center text-muted py-4">No staff found matching "' . htmlspecialchars($s_search) . '"</td></tr>';
+        } else {
+            foreach($staffs as $s): ?>
+                <tr>
+                    <td class="fw-bold name-cell"><?= htmlspecialchars($s['full_name']) ?></td>
+                    <td style="font-family: monospace; color: #666;"><?= maskEmailPHP($s['email']) ?></td>
+                    <td class="text-end">
+                        <button class="btn btn-sm btn-outline-primary border-0 me-2" onclick="editUser(<?= $s['id'] ?>,'<?= addslashes($s['full_name']) ?>','<?= addslashes($s['email']) ?>','staff','<?= $s['status'] ?>')"><i class="bi bi-pencil-square"></i></button>
+                        <button class="btn btn-sm btn-outline-danger border-0" onclick="delUser(<?= $s['id'] ?>)"><i class="bi bi-trash3"></i></button>
+                    </td>
+                </tr>
+            <?php endforeach;
+        }
+        $rows = ob_get_clean();
+        ob_start();
+        if ($s_total_pages > 1): ?>
+            <ul class="pagination pagination-sm justify-content-center mb-0">
+                <li class="page-item <?= ($s_page <= 1) ? 'disabled' : '' ?>"><a class="page-link" href="?filter=<?= $filter ?>&m_sort=<?= $m_sort ?>&s_sort=<?= $s_sort ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>&m_page=<?= $m_page ?>&s_page=<?= $s_page-1 ?>">Previous</a></li>
+                <?php for($i=1; $i<=$s_total_pages; $i++): ?><li class="page-item <?= ($i == $s_page) ? 'active' : '' ?>"><a class="page-link" href="?filter=<?= $filter ?>&m_sort=<?= $m_sort ?>&s_sort=<?= $s_sort ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>&m_page=<?= $m_page ?>&s_page=<?= $i ?>"><?= $i ?></a></li><?php endfor; ?>
+                <li class="page-item <?= ($s_page >= $s_total_pages) ? 'disabled' : '' ?>"><a class="page-link" href="?filter=<?= $filter ?>&m_sort=<?= $m_sort ?>&s_sort=<?= $s_sort ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>&m_page=<?= $m_page ?>&s_page=<?= $s_page+1 ?>">Next</a></li>
+            </ul>
+        <?php endif;
+        $pagination = ob_get_clean();
+    }
+    header('Content-Type: application/json');
+    echo json_encode(['rows' => $rows, 'pagination' => $pagination]);
+    exit;
 }
 ?>
 <!DOCTYPE html>
@@ -160,8 +272,8 @@ function maskEmailPHP($email) {
 
     <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
         <div class="btn-group bg-white p-1 rounded-3 shadow-sm border">
-            <a href="?filter=all" class="btn btn-sm <?= $filter=='all'?'btn-danger active':'btn-light' ?> px-4 fw-bold" style="border-radius: 8px;">All Members</a>
-            <a href="?filter=expiring" class="btn btn-sm <?= $filter=='expiring'?'btn-danger active':'btn-light' ?> px-4 fw-bold" style="border-radius: 8px;">Expiring Soon</a>
+            <a href="?filter=all&m_sort=<?= $m_sort ?>&s_sort=<?= $s_sort ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>" class="btn btn-sm <?= $filter=='all'?'btn-danger active':'btn-light' ?> px-4 fw-bold" style="border-radius: 8px;">All Members</a>
+            <a href="?filter=expiring&m_sort=<?= $m_sort ?>&s_sort=<?= $s_sort ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>" class="btn btn-sm <?= $filter=='expiring'?'btn-danger active':'btn-light' ?> px-4 fw-bold" style="border-radius: 8px;">Expiring Soon</a>
         </div>
         <button class="btn btn-dark btn-sm fw-bold" onclick="openAddModal('member')">
             Add Member
@@ -172,7 +284,21 @@ function maskEmailPHP($email) {
     <div class="card-table">
         <div class="d-flex justify-content-between align-items-center mb-4">
             <h6 class="fw-bold mb-0">Members Directory</h6>
-            <input type="text" id="mSearch" class="form-control bg-light border-0" style="width: 250px;" placeholder="Search name...">
+            <div class="d-flex gap-2">
+                <div class="dropdown">
+                    <button class="btn btn-light btn-sm fw-bold shadow-sm border dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                        <i class="bi bi-sort-down me-1"></i> Sort
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end shadow border-0">
+                        <li><a class="dropdown-item <?= $m_sort=='newest'?'active':'' ?>" href="?filter=<?= $filter ?>&m_sort=newest&s_sort=<?= $s_sort ?>&s_page=<?= $s_page ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>">Newest First</a></li>
+                        <li><a class="dropdown-item <?= $m_sort=='oldest'?'active':'' ?>" href="?filter=<?= $filter ?>&m_sort=oldest&s_sort=<?= $s_sort ?>&s_page=<?= $s_page ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>">Oldest First</a></li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item <?= $m_sort=='az'?'active':'' ?>" href="?filter=<?= $filter ?>&m_sort=az&s_sort=<?= $s_sort ?>&s_page=<?= $s_page ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>">Name (A-Z)</a></li>
+                        <li><a class="dropdown-item <?= $m_sort=='za'?'active':'' ?>" href="?filter=<?= $filter ?>&m_sort=za&s_sort=<?= $s_sort ?>&s_page=<?= $s_page ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>">Name (Z-A)</a></li>
+                    </ul>
+                </div>
+                <input type="text" id="mSearch" class="form-control bg-light border-0" style="width: 250px;" placeholder="Search name..." value="<?= htmlspecialchars($m_search) ?>">
+            </div>
         </div>
         <div class="table-responsive">
             <table class="table align-middle" id="mTable">
@@ -220,23 +346,25 @@ function maskEmailPHP($email) {
         </div>
         
         <!-- Pagination Members -->
-        <?php if ($m_total_pages > 1): ?>
-        <nav class="mt-3">
-            <ul class="pagination pagination-sm justify-content-center mb-0">
-                <li class="page-item <?= ($m_page <= 1) ? 'disabled' : '' ?>">
-                    <a class="page-link" href="?filter=<?= $filter ?>&m_page=<?= $m_page-1 ?>&s_page=<?= $s_page ?>">Previous</a>
-                </li>
-                <?php for($i=1; $i<=$m_total_pages; $i++): ?>
-                    <li class="page-item <?= ($i == $m_page) ? 'active' : '' ?>">
-                        <a class="page-link" href="?filter=<?= $filter ?>&m_page=<?= $i ?>&s_page=<?= $s_page ?>"><?= $i ?></a>
+        <div id="mPagination" class="mt-3">
+            <?php if ($m_total_pages > 1): ?>
+            <nav>
+                <ul class="pagination pagination-sm justify-content-center mb-0">
+                    <li class="page-item <?= ($m_page <= 1) ? 'disabled' : '' ?>">
+                        <a class="page-link" href="?filter=<?= $filter ?>&m_sort=<?= $m_sort ?>&s_sort=<?= $s_sort ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>&m_page=<?= $m_page-1 ?>&s_page=<?= $s_page ?>">Previous</a>
                     </li>
-                <?php endfor; ?>
-                <li class="page-item <?= ($m_page >= $m_total_pages) ? 'disabled' : '' ?>">
-                    <a class="page-link" href="?filter=<?= $filter ?>&m_page=<?= $m_page+1 ?>&s_page=<?= $s_page ?>">Next</a>
-                </li>
-            </ul>
-        </nav>
-        <?php endif; ?>
+                    <?php for($i=1; $i<=$m_total_pages; $i++): ?>
+                        <li class="page-item <?= ($i == $m_page) ? 'active' : '' ?>">
+                            <a class="page-link" href="?filter=<?= $filter ?>&m_sort=<?= $m_sort ?>&s_sort=<?= $s_sort ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>&m_page=<?= $i ?>&s_page=<?= $s_page ?>"><?= $i ?></a>
+                        </li>
+                    <?php endfor; ?>
+                    <li class="page-item <?= ($m_page >= $m_total_pages) ? 'disabled' : '' ?>">
+                        <a class="page-link" href="?filter=<?= $filter ?>&m_sort=<?= $m_sort ?>&s_sort=<?= $s_sort ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>&m_page=<?= $m_page+1 ?>&s_page=<?= $s_page ?>">Next</a>
+                    </li>
+                </ul>
+            </nav>
+            <?php endif; ?>
+        </div>
     </div>
 
     <!-- STAFF TABLE -->
@@ -244,7 +372,19 @@ function maskEmailPHP($email) {
         <div class="d-flex justify-content-between align-items-center mb-4">
             <h6 class="fw-bold mb-0">Staff Management</h6>
             <div class="d-flex gap-2">
-                <input type="text" id="sSearch" class="form-control bg-light border-0" style="width: 200px;" placeholder="Search staff...">
+                <div class="dropdown">
+                    <button class="btn btn-light btn-sm fw-bold shadow-sm border dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                        <i class="bi bi-sort-down me-1"></i> Sort
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end shadow border-0">
+                        <li><a class="dropdown-item <?= $s_sort=='newest'?'active':'' ?>" href="?filter=<?= $filter ?>&m_sort=<?= $m_sort ?>&s_sort=newest&m_page=<?= $m_page ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>">Newest First</a></li>
+                        <li><a class="dropdown-item <?= $s_sort=='oldest'?'active':'' ?>" href="?filter=<?= $filter ?>&m_sort=<?= $m_sort ?>&s_sort=oldest&m_page=<?= $m_page ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>">Oldest First</a></li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item <?= $s_sort=='az'?'active':'' ?>" href="?filter=<?= $filter ?>&m_sort=<?= $m_sort ?>&s_sort=az&m_page=<?= $m_page ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>">Name (A-Z)</a></li>
+                        <li><a class="dropdown-item <?= $s_sort=='za'?'active':'' ?>" href="?filter=<?= $filter ?>&m_sort=<?= $m_sort ?>&s_sort=za&m_page=<?= $m_page ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>">Name (Z-A)</a></li>
+                    </ul>
+                </div>
+                <input type="text" id="sSearch" class="form-control bg-light border-0" style="width: 200px;" placeholder="Search staff..." value="<?= htmlspecialchars($s_search) ?>">
                 <button class="btn btn-dark btn-sm fw-bold" onclick="openAddModal('staff')">Add Staff</button>
             </div>
         </div>
@@ -267,23 +407,25 @@ function maskEmailPHP($email) {
         </div>
 
         <!-- Pagination Staff -->
-        <?php if ($s_total_pages > 1): ?>
-        <nav class="mt-3">
-            <ul class="pagination pagination-sm justify-content-center mb-0">
-                <li class="page-item <?= ($s_page <= 1) ? 'disabled' : '' ?>">
-                    <a class="page-link" href="?filter=<?= $filter ?>&m_page=<?= $m_page ?>&s_page=<?= $s_page-1 ?>">Previous</a>
-                </li>
-                <?php for($i=1; $i<=$s_total_pages; $i++): ?>
-                    <li class="page-item <?= ($i == $s_page) ? 'active' : '' ?>">
-                        <a class="page-link" href="?filter=<?= $filter ?>&m_page=<?= $m_page ?>&s_page=<?= $i ?>"><?= $i ?></a>
+        <div id="sPagination" class="mt-3">
+            <?php if ($s_total_pages > 1): ?>
+            <nav>
+                <ul class="pagination pagination-sm justify-content-center mb-0">
+                    <li class="page-item <?= ($s_page <= 1) ? 'disabled' : '' ?>">
+                        <a class="page-link" href="?filter=<?= $filter ?>&m_sort=<?= $m_sort ?>&s_sort=<?= $s_sort ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>&m_page=<?= $m_page ?>&s_page=<?= $s_page-1 ?>">Previous</a>
                     </li>
-                <?php endfor; ?>
-                <li class="page-item <?= ($s_page >= $s_total_pages) ? 'disabled' : '' ?>">
-                    <a class="page-link" href="?filter=<?= $filter ?>&m_page=<?= $m_page ?>&s_page=<?= $s_page+1 ?>">Next</a>
-                </li>
-            </ul>
-        </nav>
-        <?php endif; ?>
+                    <?php for($i=1; $i<=$s_total_pages; $i++): ?>
+                        <li class="page-item <?= ($i == $s_page) ? 'active' : '' ?>">
+                            <a class="page-link" href="?filter=<?= $filter ?>&m_sort=<?= $m_sort ?>&s_sort=<?= $s_sort ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>&m_page=<?= $m_page ?>&s_page=<?= $i ?>"><?= $i ?></a>
+                        </li>
+                    <?php endfor; ?>
+                    <li class="page-item <?= ($s_page >= $s_total_pages) ? 'disabled' : '' ?>">
+                        <a class="page-link" href="?filter=<?= $filter ?>&m_sort=<?= $m_sort ?>&s_sort=<?= $s_sort ?>&m_search=<?= urlencode($m_search) ?>&s_search=<?= urlencode($s_search) ?>&m_page=<?= $m_page ?>&s_page=<?= $s_page+1 ?>">Next</a>
+                    </li>
+                </ul>
+            </nav>
+            <?php endif; ?>
+        </div>
     </div>
 </div>
 
@@ -309,7 +451,6 @@ function maskEmailPHP($email) {
 
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <?= csrf_script(); ?>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script>
     const uM = new bootstrap.Modal('#userModal'), qM = new bootstrap.Modal('#qrModal');
     
@@ -372,24 +513,63 @@ function maskEmailPHP($email) {
 
     function delUser(id) { if(confirm('Delete user?')) $.post('admin_user_actions.php', { action: 'delete', id: id }, () => location.reload()); }
     
-    $('#mSearch').on('keyup', async function() { 
-        let v = $(this).val().toLowerCase(); 
-        if (v.length > 2 && window.supabaseClient) {
-            // Use Supabase Full-Text Search for more accurate results
-            const { data, error } = await window.supabaseClient.rpc('search_users', { query: v });
-            if (!error && data) {
-                const foundIds = data.map(u => u.id);
-                $('#mTable tbody tr').each(function() {
-                    const rowId = $(this).find('button[onclick^="pay"], button[onclick^="editUser"]').attr('onclick').match(/\d+/)[0];
-                    $(this).toggle(foundIds.includes(parseInt(rowId)));
-                });
-                return;
-            }
-        }
-        // Fallback to simple client-side filter
-        $('#mTable tbody tr').filter(function() { $(this).toggle($(this).find('.name-cell').text().toLowerCase().indexOf(v) > -1); }); 
+    // --- DEBOUNCED LIVE SEARCH ---
+    let mTimer, sTimer;
+    
+    $('#mSearch').on('keyup', function() {
+        clearTimeout(mTimer);
+        const v = $(this).val().trim();
+        mTimer = setTimeout(() => {
+            const url = new URL(window.location.href);
+            url.searchParams.set('m_search', v);
+            url.searchParams.set('m_page', '1');
+            url.searchParams.set('ajax_m', '1');
+            $.get(url.toString(), function(res) {
+                $('#mTable tbody').html(res.rows);
+                $('#mPagination').html(res.pagination);
+                const nextUrl = new URL(window.location.href);
+                nextUrl.searchParams.set('m_search', v);
+                nextUrl.searchParams.set('m_page', '1');
+                window.history.replaceState({}, '', nextUrl.toString());
+            }, 'json');
+        }, 300);
     });
-    $('#sSearch').on('keyup', function() { let v = $(this).val().toLowerCase(); $('#sTable tbody tr').filter(function() { $(this).toggle($(this).find('.name-cell').text().toLowerCase().indexOf(v) > -1); }); });
+
+    $('#sSearch').on('keyup', function() {
+        clearTimeout(sTimer);
+        const v = $(this).val().trim();
+        sTimer = setTimeout(() => {
+            const url = new URL(window.location.href);
+            url.searchParams.set('s_search', v);
+            url.searchParams.set('s_page', '1');
+            url.searchParams.set('ajax_s', '1');
+            $.get(url.toString(), function(res) {
+                $('#sTable tbody').html(res.rows);
+                $('#sPagination').html(res.pagination);
+                const nextUrl = new URL(window.location.href);
+                nextUrl.searchParams.set('s_search', v);
+                nextUrl.searchParams.set('s_page', '1');
+                window.history.replaceState({}, '', nextUrl.toString());
+            }, 'json');
+        }, 300);
+    });
+
+    // Handle Enter key for immediate search
+    $('#mSearch').on('keypress', function(e) {
+        if (e.which === 13) {
+            clearTimeout(mTimer);
+            let v = $(this).val().trim();
+            window.location.href = `?filter=<?= $filter ?>&m_sort=<?= $m_sort ?>&s_sort=<?= $s_sort ?>&m_search=${encodeURIComponent(v)}&s_search=<?= urlencode($s_search) ?>`;
+        }
+    });
+
+    $('#sSearch').on('keypress', function(e) {
+        if (e.which === 13) {
+            clearTimeout(sTimer);
+            let v = $(this).val().trim();
+            window.location.href = `?filter=<?= $filter ?>&m_sort=<?= $m_sort ?>&s_sort=<?= $s_sort ?>&m_search=<?= urlencode($m_search) ?>&s_search=${encodeURIComponent(v)}`;
+        }
+    });
 
     (function() { if (localStorage.getItem('arts-gym-theme') === 'dark') document.body.classList.add('dark-mode-active'); })();
 </script>
