@@ -17,6 +17,8 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 header('Content-Type: application/json');
 
+validate_csrf();
+
 $email = trim($_POST['email'] ?? '');
 if (!$email) {
     echo json_encode(["status" => "error", "message" => "Email is required"]);

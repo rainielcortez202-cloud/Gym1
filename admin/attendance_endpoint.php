@@ -10,6 +10,8 @@ header('Content-Type: application/json');
 require '../connection.php';
 require '../includes/status_sync.php';
 
+validate_csrf();
+
 // 2. Logging Function
 function logAttendance($message) {
     $date = date('Y-m-d H:i:s');

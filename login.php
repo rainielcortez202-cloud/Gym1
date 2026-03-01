@@ -68,7 +68,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // 1. Fetch User (PostgreSQL query)
-        $stmt = $pdo->prepare("SELECT id, full_name, email, password, role, login_attempts, lockout_until FROM users WHERE email = ?");
+        $stmt = $pdo->prepare("SELECT id, full_name, email, password, role, is_verified, login_attempts, lockout_until FROM users WHERE email = ?");
         $stmt->execute([$email]);
         $user = $stmt->fetch();
 
@@ -118,6 +118,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // 3. Verify Password
         if (password_verify($pass, $user['password'])) {
+            if (!(bool)($user['is_verified'] ?? false)) {
+                echo json_encode([
+                    'status' => 'error',
+                    'message' => 'Email not verified. Please verify your email before logging in.'
+                ]);
+                exit;
+            }
             // LOGIN SUCCESS
             if ($user['role'] === 'member') {
                 $saleStmt = $pdo->prepare("SELECT id, amount, sale_date, expires_at FROM sales WHERE user_id = ? ORDER BY sale_date DESC LIMIT 1");
@@ -150,7 +157,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $receiptRef = 'AG-REC-' . str_pad((string)$saleId, 6, '0', STR_PAD_LEFT) . '-' . $refDate;
 
                 try {
-                    $apiKey = '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';
                     $amountFmt = number_format((float)($sale['amount'] ?? 0), 2);
                     $saleDateFmt = date('M d, Y', strtotime($saleDate));
                     $expiresFmt = ($sale['expires_at'] ? date('M d, Y', strtotime($sale['expires_at'])) : 'N/A');
@@ -169,29 +175,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <p style='margin-top:14px;color:#777;font-size:12px'>Keep this receipt for your records.</p>
                         </div>
                     ";
-
-                    $emailData = [
-                        "sender" => ["name" => "Arts Gym Portal", "email" => "lancegarcia841@gmail.com"],
-                        "to" => [[ "email" => $user['email'], "name" => $user['full_name'] ]],
-                        "subject" => "Arts Gym Receipt (Ref: {$receiptRef})",
-                        "htmlContent" => $html
-                    ];
-
-                    $ch = curl_init("https://api.brevo.com/v3/smtp/email");
-                    curl_setopt_array($ch, [
-                        CURLOPT_HTTPHEADER => [
-                            "api-key: " . $apiKey,
-                            "Content-Type: application/json",
-                            "Accept: application/json"
-                        ],
-                        CURLOPT_POST => true,
-                        CURLOPT_POSTFIELDS => json_encode($emailData),
-                        CURLOPT_RETURNTRANSFER => true,
-                        CURLOPT_SSL_VERIFYHOST => 0,
-                        CURLOPT_SSL_VERIFYPEER => 0
-                    ]);
-                    curl_exec($ch);
-                    curl_close($ch);
+                    require_once __DIR__ . '/includes/brevo_send.php';
+                    brevo_send_email($user['email'], $user['full_name'], "Arts Gym Receipt (Ref: {$receiptRef})", $html);
                 } catch (Exception $e) { }
             }
             
@@ -493,6 +478,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <div id="forgotSuccess" class="alert-message success" style="display: none;"><i class="bi bi-check-circle"></i><span></span></div>
 
                     <form id="forgotForm">
+                        <?= csrf_field(); ?>
                         <div class="form-group">
                             <label class="small text-secondary fw-bold mb-1">Email Address</label>
                             <div class="input-wrapper">
@@ -567,6 +553,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         const urlParams = new URLSearchParams(window.location.search);
         const attendanceMode = urlParams.get('attendance') === '1';
+        const ENABLE_SUPABASE_AUTH = <?= json_encode(((getenv('ENABLE_SUPABASE_AUTH') ?: ($_SERVER['ENABLE_SUPABASE_AUTH'] ?? '')) === '1')) ?>;
 
         $('#loginForm').submit(async function(e) {
             e.preventDefault();
@@ -583,7 +570,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             try {
                 // 1. Supabase Auth Login (Optional but helpful for RLS)
-                if (window.supabaseClient && window.supabaseClient.auth) {
+                if (ENABLE_SUPABASE_AUTH && window.supabaseClient && window.supabaseClient.auth) {
                     const { data: authData, error: authError } = await window.supabaseClient.auth.signInWithPassword({
                         email: email,
                         password: password,
@@ -595,10 +582,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         console.log("Supabase Auth success");
                     }
                 } else {
-                    console.warn("Supabase Client or Auth not initialized. Proceeding with PHP login only.");
-                    console.log("Debug Info: supabaseClient exists?", !!window.supabaseClient);
-                    if (window.supabaseClient) {
-                        console.log("Debug Info: auth exists?", !!window.supabaseClient.auth);
+                    if (ENABLE_SUPABASE_AUTH) {
+                        console.warn("Supabase Client or Auth not initialized. Proceeding with PHP login only.");
                     }
                 }
 
@@ -666,19 +651,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             try {
                 // 1. Supabase Auth Signup
-                const { data: authData, error: authError } = await window.supabaseClient.auth.signUp({
-                    email: email,
-                    password: pw,
-                    options: {
-                        data: {
-                            full_name: full_name,
+                if (ENABLE_SUPABASE_AUTH && window.supabaseClient && window.supabaseClient.auth) {
+                    const { data: authData, error: authError } = await window.supabaseClient.auth.signUp({
+                        email: email,
+                        password: pw,
+                        options: {
+                            data: {
+                                full_name: full_name,
+                            }
                         }
-                    }
-                });
+                    });
 
-                if (authError) {
-                    console.error("Supabase Signup Error:", authError.message);
-                    // Handle error (optional: allow PHP registration even if Supabase fails)
+                    if (authError) {
+                        console.error("Supabase Signup Error:", authError.message);
+                    }
                 }
 
                 // 2. PHP Backend Register
@@ -740,6 +726,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             });
         });
     </script>
+    <script>window.CSRF_TOKEN = <?= json_encode($_SESSION['csrf_token'] ?? '') ?>;</script>
     <script src="assets/js/global_attendance.js"></script>
 </body>
 </html>

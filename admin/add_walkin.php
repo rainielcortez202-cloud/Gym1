@@ -9,6 +9,8 @@ if ($_SESSION['role'] !== 'admin' && $_SESSION['role'] !== 'staff') {
     exit;
 }
 
+validate_csrf();
+
 // Get POST data
 $name = trim($_POST['name'] ?? '');
 $amount = $_POST['amount'] ?? 0;

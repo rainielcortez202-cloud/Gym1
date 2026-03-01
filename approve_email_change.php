@@ -87,37 +87,10 @@ try {
         </div>
     ";
 
-    // Send via Brevo
-    $apiKey = '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';
-    $emailData = [
-        "sender" => ["name" => "Arts Gym Portal", "email" => "lancegarcia841@gmail.com"],
-        "to" => [[ "email" => $new_email, "name" => $user['full_name'] ]],
-        "subject" => $subject,
-        "htmlContent" => $bodyHtml
-    ];
+    require_once __DIR__ . '/includes/brevo_send.php';
+    $sendRes = brevo_send_email($new_email, $user['full_name'], $subject, $bodyHtml);
 
-    $ch = curl_init("https://api.brevo.com/v3/smtp/email");
-    curl_setopt_array($ch, [
-        CURLOPT_HTTPHEADER => [
-            "api-key: " . $apiKey,
-            "Content-Type: application/json",
-            "Accept: application/json"
-        ],
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => json_encode($emailData),
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_SSL_VERIFYHOST => false
-    ]);
-
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $curlError = curl_error($ch);
-    curl_close($ch);
-
-    // Check if email was sent successfully
-    if ($curlError) {
-        error_log("Brevo CURL Error: " . $curlError);
+    if (!$sendRes['success']) {
         ?>
         <!DOCTYPE html>
         <html lang="en">
@@ -137,41 +110,6 @@ try {
                     <div class="mb-3"><i class="bi bi-exclamation-triangle-fill text-warning" style="font-size: 3rem;"></i></div>
                     <h4 class="mb-3">Email Sending Error</h4>
                     <p class="text-muted">There was an error sending the verification email. Please try requesting the email change again.</p>
-                    <a href="login.php" class="btn btn-danger mt-3">Go to Login</a>
-                </div>
-            </div>
-        </body>
-        </html>
-        <?php
-        exit;
-    }
-
-    if ($httpCode !== 201) {
-        error_log("Brevo API Error: HTTP $httpCode - Response: " . $response);
-        $errorMsg = "Failed to send verification email";
-        if ($httpCode === 400 || $httpCode === 401) {
-            $errorMsg = "Email service configuration error. Please contact support.";
-        }
-        ?>
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Email Error</title>
-            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-            <style>
-                body { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: #f8f9fa; }
-                .card { max-width: 500px; padding: 30px; }
-            </style>
-        </head>
-        <body>
-            <div class="card shadow">
-                <div class="text-center">
-                    <div class="mb-3"><i class="bi bi-exclamation-triangle-fill text-warning" style="font-size: 3rem;"></i></div>
-                    <h4 class="mb-3">Email Sending Error</h4>
-                    <p class="text-muted"><?= htmlspecialchars($errorMsg) ?></p>
-                    <p class="text-muted small">HTTP Code: <?= $httpCode ?></p>
                     <a href="login.php" class="btn btn-danger mt-3">Go to Login</a>
                 </div>
             </div>

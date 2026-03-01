@@ -8,6 +8,8 @@ if($_SESSION['role']!=='admin'){
     exit;
 }
 
+validate_csrf();
+
 $user_id = $_POST['user_id'] ?? 0;
 if(!$user_id){
     echo json_encode(['status'=>'error','message'=>'Missing user id']);

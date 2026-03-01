@@ -264,6 +264,12 @@ if ($muscle_id) {
                         <i class="bi bi-arrow-left me-1"></i> Back
                     </a>
                 </div>
+                <?php if (empty($muscles)): ?>
+                    <div class="card-box">
+                        <h5 class="exercise-title mb-1">No muscles found</h5>
+                        <p class="exercise-desc mb-0">The exercise library is not seeded yet. Please ask an admin to seed or add muscles and exercises.</p>
+                    </div>
+                <?php endif; ?>
                 <div class="exercise-grid">
                     <?php foreach($muscles as $m): ?>
                         <div class="card-box">
@@ -286,6 +292,12 @@ if ($muscle_id) {
                         <i class="bi bi-arrow-left me-1"></i> Back
                     </a>
                 </div>
+                <?php if (empty($exercises)): ?>
+                    <div class="card-box">
+                        <h5 class="exercise-title mb-1">No exercises found</h5>
+                        <p class="exercise-desc mb-0">This muscle has no exercises yet. Please ask an admin to add exercises.</p>
+                    </div>
+                <?php endif; ?>
                 <div class="exercise-grid">
                     <?php foreach($exercises as $e): ?>
                         <div class="card-box">

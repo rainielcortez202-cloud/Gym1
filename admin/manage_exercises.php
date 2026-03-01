@@ -13,8 +13,20 @@ if ($_SESSION['role'] !== 'admin') {
 $group_id  = $_GET['group']  ?? null;
 $muscle_id = $_GET['muscle'] ?? null;
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    validate_csrf();
+}
+
 /* FETCH GROUPS */
 $groups = $pdo->query("SELECT * FROM muscle_groups ORDER BY id")->fetchAll(PDO::FETCH_ASSOC);
+
+/* SEED LIBRARY (if empty) */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['seed_library'])) {
+    require_once __DIR__ . '/../includes/seed_exercise_library.php';
+    seed_exercise_library($pdo);
+    header("Location: manage_exercises.php?seed=1");
+    exit;
+}
 
 /* FETCH MUSCLES */
 $muscles = [];
@@ -23,6 +35,10 @@ if ($group_id) {
     $stmt->execute([$group_id]);
     $muscles = $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
+
+$muscles_total = (int)$pdo->query("SELECT COUNT(*) FROM muscles")->fetchColumn();
+$exercises_total = (int)$pdo->query("SELECT COUNT(*) FROM exercises")->fetchColumn();
+$library_empty = ($muscles_total === 0 && $exercises_total === 0);
 
 /* ADD / UPDATE */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_exercise'])) {
@@ -206,6 +222,22 @@ if (isset($_GET['edit'])) {
         <div class="row g-4">
             <!-- Left Column: Navigation -->
             <div class="col-12 col-xl-4">
+                <?php if ($library_empty): ?>
+                <div class="card-custom">
+                    <div class="d-flex align-items-center mb-3">
+                        <span class="step-pill">!</span>
+                        <span class="section-title">Library Empty</span>
+                    </div>
+                    <p class="text-muted small mb-3">Muscles and exercises are missing. Seed starter data to restore the member library.</p>
+                    <form method="POST">
+                        <?= csrf_field(); ?>
+                        <button type="submit" name="seed_library" class="btn btn-danger w-100 fw-bold">
+                            Seed Exercise Library
+                        </button>
+                    </form>
+                </div>
+                <?php endif; ?>
+
                 <div class="card-custom">
                     <div class="d-flex align-items-center mb-4">
                         <span class="step-pill">1</span>
@@ -254,6 +286,7 @@ if (isset($_GET['edit'])) {
                     </div>
                     
                     <form method="POST">
+                        <?= csrf_field(); ?>
                         <input type="hidden" name="exercise_id" value="<?= $edit['id'] ?? '' ?>">
                         <input type="hidden" name="muscle_group_id" value="<?= $group_id ?>">
                         <input type="hidden" name="muscle_id" value="<?= $muscle_id ?>">

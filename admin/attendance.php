@@ -1,6 +1,5 @@
     <?php
     // admin/attendance.php
-    session_start();
     require '../auth.php';
     require '../connection.php';
 

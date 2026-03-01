@@ -9,6 +9,7 @@ if (!isset($_SESSION['user_id']) || !isset($_SESSION['role']) || !in_array($_SES
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Content-Type: application/json');
+    validate_csrf();
 
     $qr_code = $_POST['qr_code'] ?? '';
     if (!$qr_code) {
@@ -59,13 +60,14 @@ html, body { margin:0; padding:0; height:100%; background:#000; display:flex; ju
 
 <script src="https://unpkg.com/html5-qrcode"></script>
 <script>
+window.CSRF_TOKEN = <?= json_encode($_SESSION['csrf_token'] ?? '') ?>;
 const reader = new Html5Qrcode("reader");
 
 function onScanSuccess(decodedText) {
     reader.stop().then(() => {
         fetch("qr_code.php", {
             method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            headers: { "Content-Type": "application/x-www-form-urlencoded", "X-CSRF-TOKEN": (window.CSRF_TOKEN || "") },
             body: "qr_code=" + encodeURIComponent(decodedText)
         })
         .then(res => res.json())

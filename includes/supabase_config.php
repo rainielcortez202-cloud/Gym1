@@ -2,7 +2,8 @@
 // Supabase Configuration
 // This file is safe to include in JS bridges because it doesn't connect to the database.
 
-$supabase_url = "https://olczvynzhpwnaotzjaig.supabase.co";
-$supabase_anon_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9sY3p2eW56aHB3bmFvdHpqYWlnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA0NDUwMjEsImV4cCI6MjA4NjAyMTAyMX0.0G9pMs7TzeBdNcT9bsi2Km3951tPL3zEIo7-QfNFVE0";
-$supabase_service_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9sY3p2eW56aHB3bmFvdHpqYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MDQ0NTAyMSwiZXhwIjoyMDg2MDIxMDIxfQ.hzM_VHu9IRSVnN_pXgNv3tobpAddkO6GC65l56t5FOo";
+require_once __DIR__ . '/env.php';
+
+$supabase_url = getenv('SUPABASE_URL') ?: ($_SERVER['SUPABASE_URL'] ?? '');
+$supabase_anon_key = getenv('SUPABASE_ANON_KEY') ?: ($_SERVER['SUPABASE_ANON_KEY'] ?? '');
 ?>

@@ -10,6 +10,8 @@ require 'connection.php';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Content-Type: application/json');
 
+    validate_csrf();
+
     $email = trim($_POST['email'] ?? '');
 
     if (!$email) {
@@ -101,6 +103,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <h4 class="text-center fw-bold mb-3">Resend Verification Email</h4>
 
     <form id="resendForm">
+        <?= csrf_field(); ?>
         <div class="mb-3">
             <input type="email" name="email" class="form-control" placeholder="Registered email" required>
         </div>

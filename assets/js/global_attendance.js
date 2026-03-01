@@ -70,9 +70,17 @@
 
         showToast("Processing Scan...", "info");
 
+        const csrfToken =
+            (typeof window !== 'undefined' && window.CSRF_TOKEN) ||
+            (document.querySelector('meta[name="csrf-token"]') && document.querySelector('meta[name="csrf-token"]').getAttribute('content')) ||
+            '';
+
         fetch(endpoint, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                ...(csrfToken ? { 'X-CSRF-TOKEN': csrfToken } : {})
+            },
             body: JSON.stringify({ qr_code: code })
         })
             .then(response => {

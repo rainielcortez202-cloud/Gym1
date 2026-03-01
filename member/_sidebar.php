@@ -9,6 +9,7 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'member') {
 }
  $current = basename($_SERVER['PHP_SELF']);
 ?>
+<script>window.CSRF_TOKEN = <?= json_encode($_SESSION['csrf_token'] ?? '') ?>;</script>
 
 <link rel="stylesheet" href="../assets/css/shared_layout.css">
 

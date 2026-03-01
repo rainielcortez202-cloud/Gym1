@@ -6,10 +6,10 @@ require_once 'connection.php';
  * If the user does not exist in Supabase Auth, it CREATES them with a default password.
  */
 function syncSupabaseMetadata($pdo, $email, $role) {
-    global $supabase_service_key, $supabase_url;
-    
-    if ($supabase_service_key === "REPLACE_WITH_YOUR_SERVICE_ROLE_KEY" || empty($supabase_service_key)) {
-        return "❌ Missing Service Role Key";
+    global $supabase_url;
+    $supabase_service_key = getenv('SUPABASE_SERVICE_ROLE_KEY') ?: ($_SERVER['SUPABASE_SERVICE_ROLE_KEY'] ?? '');
+    if (!$supabase_url || !$supabase_service_key) {
+        return "❌ Missing Supabase configuration";
     }
 
     // 1. Check if User exists in Supabase Auth
@@ -17,11 +17,11 @@ function syncSupabaseMetadata($pdo, $email, $role) {
     $ch = curl_init($search_url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 10,
         CURLOPT_HTTPHEADER => [
             "apikey: {$supabase_service_key}",
             "Authorization: Bearer {$supabase_service_key}"
-        ],
-        CURLOPT_SSL_VERIFYPEER => false
+        ]
     ]);
     $response = curl_exec($ch);
     $users_data = json_decode($response, true);
@@ -39,7 +39,7 @@ function syncSupabaseMetadata($pdo, $email, $role) {
     if (!$target_uuid) {
         // 2. User NOT found -> CREATE THEM in Supabase Auth
         $create_url = "{$supabase_url}/auth/v1/admin/users";
-        $default_pass = "Gym12345!"; // Default password for new auth accounts
+        $default_pass = bin2hex(random_bytes(16));
         
         $create_data = [
             "email" => $email,
@@ -51,14 +51,14 @@ function syncSupabaseMetadata($pdo, $email, $role) {
         $ch = curl_init($create_url);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 10,
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => json_encode($create_data),
             CURLOPT_HTTPHEADER => [
                 "apikey: {$supabase_service_key}",
                 "Authorization: Bearer {$supabase_service_key}",
                 "Content-Type: application/json"
-            ],
-            CURLOPT_SSL_VERIFYPEER => false
+            ]
         ]);
         $response = curl_exec($ch);
         $res_data = json_decode($response, true);
@@ -66,7 +66,7 @@ function syncSupabaseMetadata($pdo, $email, $role) {
         curl_close($ch);
 
         if ($status === 201 || $status === 200) {
-            return "✅ Created & Synced (Default Pass: $default_pass)";
+            return "✅ Created & Synced";
         } else {
             return "❌ Create Failed: " . ($res_data['msg'] ?? 'Unknown Error');
         }
@@ -78,14 +78,14 @@ function syncSupabaseMetadata($pdo, $email, $role) {
         $ch = curl_init($update_url);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 10,
             CURLOPT_CUSTOMREQUEST => "PUT",
             CURLOPT_POSTFIELDS => json_encode($data),
             CURLOPT_HTTPHEADER => [
                 "apikey: {$supabase_service_key}",
                 "Authorization: Bearer {$supabase_service_key}",
                 "Content-Type: application/json"
-            ],
-            CURLOPT_SSL_VERIFYPEER => false
+            ]
         ]);
         curl_exec($ch);
         $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);

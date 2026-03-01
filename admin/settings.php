@@ -12,10 +12,211 @@ if ($_SESSION['role'] !== 'admin') {
 $message = '';
 $error = '';
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    validate_csrf();
+}
+
+$isLocalhost = function(): bool {
+    $server = $_SERVER['SERVER_NAME'] ?? '';
+    return ($server === 'localhost' || $server === '127.0.0.1');
+};
+
+$requireAdminPassword = function(PDO $pdo, int $adminId, string $password): bool {
+    if ($adminId <= 0 || $password === '') return false;
+    $stmt = $pdo->prepare("SELECT password FROM users WHERE id = ? AND role = 'admin' LIMIT 1");
+    $stmt->execute([$adminId]);
+    $hash = $stmt->fetchColumn();
+    if (!$hash) return false;
+    return password_verify($password, $hash);
+};
+
+$getSettingValue = function(PDO $pdo, string $key, string $default = ''): string {
+    try {
+        $stmt = $pdo->prepare("SELECT setting_value FROM settings WHERE setting_key = ? LIMIT 1");
+        $stmt->execute([$key]);
+        $val = $stmt->fetchColumn();
+        if ($val === false || $val === null) return $default;
+        return (string)$val;
+    } catch (Exception $e) {
+        return $default;
+    }
+};
+
+if (isset($_POST['update_retention'])) {
+    $confirmPassword = (string)($_POST['confirm_password'] ?? '');
+    if (!$requireAdminPassword($pdo, (int)($_SESSION['user_id'] ?? 0), $confirmPassword)) {
+        $error = "Admin password confirmation failed.";
+    } else {
+        $keys = [
+            'retention_activity_log_days' => (int)($_POST['retention_activity_log_days'] ?? 90),
+            'retention_attendance_days' => (int)($_POST['retention_attendance_days'] ?? 90),
+            'retention_walkins_days' => (int)($_POST['retention_walkins_days'] ?? 30),
+            'retention_unverified_member_days' => (int)($_POST['retention_unverified_member_days'] ?? 7),
+        ];
+
+        try {
+            foreach ($keys as $k => $v) {
+                $v = $v > 0 ? (string)$v : '1';
+                $pdo->prepare("
+                    INSERT INTO settings (setting_key, setting_value, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT (setting_key) DO UPDATE
+                        SET setting_value = EXCLUDED.setting_value,
+                            updated_at = CURRENT_TIMESTAMP
+                ")->execute([$k, $v]);
+            }
+            logActivity($pdo, $_SESSION['user_id'], $_SESSION['role'], 'UPDATE_RETENTION', 'Updated retention settings');
+            $message = "Retention settings updated successfully!";
+        } catch (Exception $e) {
+            $error = "Retention update failed: " . $e->getMessage();
+        }
+    }
+}
+
+if (isset($_POST['export_member_data'])) {
+    $confirmPassword = (string)($_POST['confirm_password'] ?? '');
+    if (!$requireAdminPassword($pdo, (int)($_SESSION['user_id'] ?? 0), $confirmPassword)) {
+        $error = "Admin password confirmation failed.";
+    } else {
+        $memberId = (int)($_POST['member_id'] ?? 0);
+        $memberEmail = trim((string)($_POST['member_email'] ?? ''));
+
+        try {
+            if ($memberId > 0) {
+                $stmt = $pdo->prepare("SELECT id, full_name, email, role, status, created_at FROM users WHERE id = ? AND role = 'member' LIMIT 1");
+                $stmt->execute([$memberId]);
+            } elseif ($memberEmail !== '') {
+                $stmt = $pdo->prepare("SELECT id, full_name, email, role, status, created_at FROM users WHERE email = ? AND role = 'member' LIMIT 1");
+                $stmt->execute([$memberEmail]);
+            } else {
+                throw new RuntimeException("Provide member ID or email.");
+            }
+            $member = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$member) throw new RuntimeException("Member not found.");
+
+            $uid = (int)$member['id'];
+
+            $sales = $pdo->prepare("SELECT id, amount, sale_date, expires_at FROM sales WHERE user_id = ? ORDER BY sale_date DESC");
+            $sales->execute([$uid]);
+
+            $attendance = $pdo->prepare("SELECT id, date, time_in, attendance_date FROM attendance WHERE user_id = ? ORDER BY date DESC, time_in DESC");
+            $attendance->execute([$uid]);
+
+            $workouts = $pdo->prepare("
+                SELECT wp.id, wp.planned_date, wp.status, STRING_AGG(DISTINCT e.name, ', ') AS exercises
+                FROM workout_plans wp
+                JOIN workout_plan_exercises wpe ON wp.id = wpe.plan_id
+                JOIN exercises e ON wpe.exercise_id = e.id
+                WHERE wp.user_id = ?
+                GROUP BY wp.id, wp.planned_date, wp.status
+                ORDER BY wp.planned_date DESC
+            ");
+            $workouts->execute([$uid]);
+
+            $export = [
+                'exported_at' => date('c'),
+                'member' => $member,
+                'sales' => $sales->fetchAll(PDO::FETCH_ASSOC),
+                'attendance' => $attendance->fetchAll(PDO::FETCH_ASSOC),
+                'workout_plans' => $workouts->fetchAll(PDO::FETCH_ASSOC),
+            ];
+
+            logActivity($pdo, $_SESSION['user_id'], $_SESSION['role'], 'PRIVACY_EXPORT', "Exported member data for user_id={$uid}");
+
+            if (ob_get_length()) ob_end_clean();
+            header('Content-Type: application/json');
+            header('Content-Disposition: attachment; filename="member_export_' . $uid . '_' . date('Y-m-d_H-i') . '.json"');
+            echo json_encode($export, JSON_PRETTY_PRINT);
+            exit;
+        } catch (Exception $e) {
+            $error = "Export member data failed: " . $e->getMessage();
+        }
+    }
+}
+
+if (isset($_POST['anonymize_member'])) {
+    $confirmPassword = (string)($_POST['confirm_password'] ?? '');
+    if (!$requireAdminPassword($pdo, (int)($_SESSION['user_id'] ?? 0), $confirmPassword)) {
+        $error = "Admin password confirmation failed.";
+    } else {
+        $memberId = (int)($_POST['member_id'] ?? 0);
+        if ($memberId <= 0) {
+            $error = "Provide a valid member ID.";
+        } else {
+            try {
+                $stmt = $pdo->prepare("SELECT id FROM users WHERE id = ? AND role = 'member' LIMIT 1");
+                $stmt->execute([$memberId]);
+                $exists = $stmt->fetchColumn();
+                if (!$exists) throw new RuntimeException("Member not found.");
+
+                $anonEmail = "deleted+{$memberId}." . bin2hex(random_bytes(4)) . "@example.invalid";
+                $anonQr = "AG-DEL-" . strtoupper(bin2hex(random_bytes(4)));
+                $anonPass = password_hash(bin2hex(random_bytes(24)), PASSWORD_DEFAULT);
+
+                $pdo->prepare("
+                    UPDATE users
+                    SET full_name = 'Deleted Member',
+                        email = ?,
+                        contact_number = NULL,
+                        password = ?,
+                        status = 'inactive',
+                        qr_code = ?,
+                        qr_image = NULL,
+                        is_verified = FALSE,
+                        verification_token = NULL,
+                        reset_token = NULL,
+                        reset_expires = NULL,
+                        login_attempts = 0,
+                        lockout_until = NULL
+                    WHERE id = ? AND role = 'member'
+                ")->execute([$anonEmail, $anonPass, $anonQr, $memberId]);
+
+                logActivity($pdo, $_SESSION['user_id'], $_SESSION['role'], 'PRIVACY_ANONYMIZE', "Anonymized member user_id={$memberId}");
+                $message = "Member anonymized successfully!";
+            } catch (Exception $e) {
+                $error = "Anonymize failed: " . $e->getMessage();
+            }
+        }
+    }
+}
+
+if (isset($_POST['delete_member'])) {
+    $confirmPassword = (string)($_POST['confirm_password'] ?? '');
+    if (!$requireAdminPassword($pdo, (int)($_SESSION['user_id'] ?? 0), $confirmPassword)) {
+        $error = "Admin password confirmation failed.";
+    } else {
+        $memberId = (int)($_POST['member_id'] ?? 0);
+        if ($memberId <= 0) {
+            $error = "Provide a valid member ID.";
+        } else {
+            try {
+                $pdo->beginTransaction();
+
+                $pdo->prepare("DELETE FROM workout_plan_exercises WHERE plan_id IN (SELECT id FROM workout_plans WHERE user_id = ?)")->execute([$memberId]);
+                $pdo->prepare("DELETE FROM workout_plans WHERE user_id = ?")->execute([$memberId]);
+                $pdo->prepare("DELETE FROM attendance WHERE user_id = ?")->execute([$memberId]);
+                $pdo->prepare("DELETE FROM sales WHERE user_id = ?")->execute([$memberId]);
+                $pdo->prepare("DELETE FROM users WHERE id = ? AND role = 'member'")->execute([$memberId]);
+
+                $pdo->commit();
+                logActivity($pdo, $_SESSION['user_id'], $_SESSION['role'], 'PRIVACY_DELETE', "Deleted member user_id={$memberId}");
+                $message = "Member deleted successfully!";
+            } catch (Exception $e) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                $error = "Delete failed: " . $e->getMessage();
+            }
+        }
+    }
+}
+
 // --- DATABASE EXPORT LOGIC ---
 if (isset($_POST['export_db'])) {
     if (ob_get_length()) ob_end_clean();
     try {
+        $confirmPassword = (string)($_POST['confirm_password'] ?? '');
+        if (!$requireAdminPassword($pdo, (int)($_SESSION['user_id'] ?? 0), $confirmPassword)) {
+            throw new RuntimeException("Admin password confirmation failed.");
+        }
         $tables = [];
         $query = $pdo->query("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public'");
         while ($row = $query->fetch(PDO::FETCH_ASSOC)) {
@@ -26,18 +227,55 @@ if (isset($_POST['export_db'])) {
         $sql_dump .= "SET statement_timeout = 0;\nSET client_encoding = 'UTF8';\n";
         $sql_dump .= "SET standard_conforming_strings = on;\nSET session_replication_role = 'replica';\n\n";
 
+        $columnMetaStmt = $pdo->prepare("
+            SELECT a.attname, a.attgenerated, a.attidentity
+            FROM pg_attribute a
+            JOIN pg_class c ON a.attrelid = c.oid
+            JOIN pg_namespace n ON c.relnamespace = n.oid
+            WHERE n.nspname = 'public'
+              AND c.relname = ?
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+            ORDER BY a.attnum
+        ");
+
         foreach ($tables as $table) {
             $sql_dump .= "-- Table: $table\nTRUNCATE TABLE \"$table\" RESTART IDENTITY CASCADE;\n";
-            $res = $pdo->query("SELECT * FROM \"$table\"");
+            $columnMetaStmt->execute([$table]);
+            $colsMeta = $columnMetaStmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $insertCols = [];
+            $hasIdentityAlways = false;
+            foreach ($colsMeta as $c) {
+                if (!empty($c['attgenerated'])) {
+                    continue;
+                }
+                $insertCols[] = $c['attname'];
+                if (($c['attidentity'] ?? '') === 'a') {
+                    $hasIdentityAlways = true;
+                }
+            }
+
+            if (!$insertCols) {
+                $sql_dump .= "\n";
+                continue;
+            }
+
+            $selectColsSql = implode(', ', array_map(fn($col) => '"' . str_replace('"', '""', $col) . '"', $insertCols));
+            $res = $pdo->query("SELECT {$selectColsSql} FROM \"$table\"");
             while ($row = $res->fetch(PDO::FETCH_ASSOC)) {
-                $keys = array_keys($row);
-                $values = array_values($row);
+                $keys = $insertCols;
+                $values = [];
+                foreach ($insertCols as $col) {
+                    $values[] = $row[$col] ?? null;
+                }
                 $formattedValues = array_map(function($v) use ($pdo) {
                     if ($v === null) return "NULL";
                     if (is_bool($v)) return $v ? 'true' : 'false';
                     return $pdo->quote($v);
                 }, $values);
-                $sql_dump .= "INSERT INTO \"$table\" (\"" . implode("\", \"", $keys) . "\") VALUES (" . implode(", ", $formattedValues) . ");\n";
+                $override = $hasIdentityAlways ? " OVERRIDING SYSTEM VALUE" : "";
+                $sql_dump .= "INSERT INTO \"$table\" (\"" . implode("\", \"", $keys) . "\"){$override} VALUES (" . implode(", ", $formattedValues) . ");\n";
             }
             $sql_dump .= "\n";
         }
@@ -54,18 +292,38 @@ if (isset($_POST['export_db'])) {
 
 // --- DATABASE IMPORT LOGIC ---
 if (isset($_POST['import_db'])) {
-    if ($_FILES['sql_file']['error'] == 0) {
-        try {
-            $sql = file_get_contents($_FILES['sql_file']['tmp_name']);
-            $pdo->exec($sql);
-            $message = "Database restored successfully!";
-        } catch (Exception $e) {
-            $error = "Import failed: " . $e->getMessage();
+    try {
+        $allowImport = (getenv('ALLOW_DB_IMPORT') ?: ($_SERVER['ALLOW_DB_IMPORT'] ?? '')) === '1';
+        if (!$allowImport || !$isLocalhost()) {
+            throw new RuntimeException("Database restore is disabled in this environment.");
         }
-    } else {
-        $error = "Please select a valid .sql file.";
+        $confirmPassword = (string)($_POST['confirm_password'] ?? '');
+        if (!$requireAdminPassword($pdo, (int)($_SESSION['user_id'] ?? 0), $confirmPassword)) {
+            throw new RuntimeException("Admin password confirmation failed.");
+        }
+    } catch (Exception $e) {
+        $error = $e->getMessage();
+    }
+
+    if (!$error) {
+        if ($_FILES['sql_file']['error'] == 0) {
+            try {
+                $sql = file_get_contents($_FILES['sql_file']['tmp_name']);
+                $pdo->exec($sql);
+                $message = "Database restored successfully!";
+            } catch (Exception $e) {
+                $error = "Import failed: " . $e->getMessage();
+            }
+        } else {
+            $error = "Please select a valid .sql file.";
+        }
     }
 }
+
+$retention_activity_log_days = (int)$getSettingValue($pdo, 'retention_activity_log_days', '90');
+$retention_attendance_days = (int)$getSettingValue($pdo, 'retention_attendance_days', '90');
+$retention_walkins_days = (int)$getSettingValue($pdo, 'retention_walkins_days', '30');
+$retention_unverified_member_days = (int)$getSettingValue($pdo, 'retention_unverified_member_days', '7');
 ?>
 
 <!DOCTYPE html>
@@ -225,6 +483,8 @@ if (isset($_POST['import_db'])) {
                         <h4 class="fw-bold mb-2">Export Records</h4>
                         <p class="text-muted small mb-4">Download a full PostgreSQL backup (.sql) of your entire gym system. This includes all active members, transactions, and historical data.</p>
                         <form method="POST">
+                            <?= csrf_field(); ?>
+                            <input type="password" name="confirm_password" class="form-control mb-3" placeholder="Confirm Admin Password" required>
                             <button type="submit" name="export_db" class="btn-red">
                                 <i class="bi bi-file-earmark-arrow-down me-2"></i>Generate Backup
                             </button>
@@ -239,14 +499,104 @@ if (isset($_POST['import_db'])) {
                         <h4 class="fw-bold mb-2">Restore Database</h4>
                         <p class="text-muted small mb-3">Upload an Arts Gym backup file. <span class="text-danger fw-bold">Warning: This will truncate current tables and replace them with backup data.</span></p>
                         <form method="POST" enctype="multipart/form-data">
+                            <?= csrf_field(); ?>
                             <input type="file" name="sql_file" class="form-control mb-3" accept=".sql" required>
+                            <input type="password" name="confirm_password" class="form-control mb-3" placeholder="Confirm Admin Password" required>
                             <button type="submit" name="import_db" class="btn-dark-custom" onclick="return confirm('WARNING: Are you sure you want to restore? Current data will be overwritten.')">
                                 <i class="bi bi-arrow-repeat me-2"></i>Execute Restore
+                            </button>
+                            <div class="text-muted small mt-3">
+                                Restore requires <span class="fw-bold">ALLOW_DB_IMPORT=1</span> and localhost environment.
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+            </div>
+            
+            <div class="row g-4 mt-1">
+                <div class="col-12 col-xl-6">
+                    <div class="card-box">
+                        <div class="icon-box"><i class="bi bi-shield-check"></i></div>
+                        <h4 class="fw-bold mb-2">Retention Policy (Configurable)</h4>
+                        <p class="text-muted small mb-4">Configure how long records are retained before automatic cleanup runs.</p>
+                        <form method="POST">
+                            <?= csrf_field(); ?>
+                            <div class="row g-3">
+                                <div class="col-12 col-md-6">
+                                    <label class="small fw-bold text-uppercase text-muted mb-1 d-block">Activity Log (days)</label>
+                                    <input type="number" min="1" name="retention_activity_log_days" class="form-control" value="<?= (int)$retention_activity_log_days ?>" required>
+                                </div>
+                                <div class="col-12 col-md-6">
+                                    <label class="small fw-bold text-uppercase text-muted mb-1 d-block">Attendance (days)</label>
+                                    <input type="number" min="1" name="retention_attendance_days" class="form-control" value="<?= (int)$retention_attendance_days ?>" required>
+                                </div>
+                                <div class="col-12 col-md-6">
+                                    <label class="small fw-bold text-uppercase text-muted mb-1 d-block">Walk-ins (days)</label>
+                                    <input type="number" min="1" name="retention_walkins_days" class="form-control" value="<?= (int)$retention_walkins_days ?>" required>
+                                </div>
+                                <div class="col-12 col-md-6">
+                                    <label class="small fw-bold text-uppercase text-muted mb-1 d-block">Unverified Members (days)</label>
+                                    <input type="number" min="1" name="retention_unverified_member_days" class="form-control" value="<?= (int)$retention_unverified_member_days ?>" required>
+                                </div>
+                            </div>
+                            <input type="password" name="confirm_password" class="form-control mt-3" placeholder="Confirm Admin Password" required>
+                            <button type="submit" name="update_retention" class="btn-red mt-3">
+                                <i class="bi bi-save me-2"></i>Save Retention Settings
                             </button>
                         </form>
                     </div>
                 </div>
 
+                <div class="col-12 col-xl-6">
+                    <div class="card-box" style="border-top: 4px solid var(--primary-red);">
+                        <div class="icon-box"><i class="bi bi-person-lock"></i></div>
+                        <h4 class="fw-bold mb-2">Data Privacy Requests</h4>
+                        <p class="text-muted small mb-4">Export, anonymize, or delete a member’s data with audit logging.</p>
+
+                        <form method="POST" class="mb-4">
+                            <?= csrf_field(); ?>
+                            <div class="row g-3">
+                                <div class="col-12 col-md-6">
+                                    <input type="number" min="1" name="member_id" class="form-control" placeholder="Member ID">
+                                </div>
+                                <div class="col-12 col-md-6">
+                                    <input type="email" name="member_email" class="form-control" placeholder="Member Email (optional)">
+                                </div>
+                            </div>
+                            <input type="password" name="confirm_password" class="form-control mt-3" placeholder="Confirm Admin Password" required>
+                            <button type="submit" name="export_member_data" class="btn-dark-custom mt-3">
+                                <i class="bi bi-filetype-json me-2"></i>Export Member Data (JSON)
+                            </button>
+                        </form>
+
+                        <form method="POST" class="mb-3">
+                            <?= csrf_field(); ?>
+                            <div class="row g-3">
+                                <div class="col-12">
+                                    <input type="number" min="1" name="member_id" class="form-control" placeholder="Member ID" required>
+                                </div>
+                            </div>
+                            <input type="password" name="confirm_password" class="form-control mt-3" placeholder="Confirm Admin Password" required>
+                            <button type="submit" name="anonymize_member" class="btn-dark-custom mt-3" onclick="return confirm('Anonymize this member? This cannot be undone.')">
+                                <i class="bi bi-incognito me-2"></i>Anonymize Member
+                            </button>
+                        </form>
+
+                        <form method="POST">
+                            <?= csrf_field(); ?>
+                            <div class="row g-3">
+                                <div class="col-12">
+                                    <input type="number" min="1" name="member_id" class="form-control" placeholder="Member ID" required>
+                                </div>
+                            </div>
+                            <input type="password" name="confirm_password" class="form-control mt-3" placeholder="Confirm Admin Password" required>
+                            <button type="submit" name="delete_member" class="btn-red mt-3" onclick="return confirm('Delete this member permanently? This cannot be undone.')">
+                                <i class="bi bi-trash me-2"></i>Delete Member
+                            </button>
+                        </form>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

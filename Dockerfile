@@ -24,8 +24,17 @@ RUN a2enmod rewrite
 # Install Composer
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
-# Set Brevo API Key as environment variable
-ENV BREVO_API_KEY=your_brevo_api_key_here
+# Environment configuration (set real values at deploy time)
+ENV BREVO_API_KEY=""
+ENV SUPABASE_URL=""
+ENV SUPABASE_ANON_KEY=""
+ENV SUPABASE_SERVICE_ROLE_KEY=""
+ENV SUPABASE_DB_HOST=""
+ENV SUPABASE_DB_PORT="6543"
+ENV SUPABASE_DB_NAME="postgres"
+ENV SUPABASE_DB_USER=""
+ENV SUPABASE_DB_PASSWORD=""
+ENV ALLOW_DB_IMPORT="0"
 
 # Copy project files
 COPY . /var/www/html/

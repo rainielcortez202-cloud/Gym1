@@ -6,22 +6,14 @@ if (basename($_SERVER['PHP_SELF']) == 'connection.php') {
 
 // Include Global Security Layer
 require_once __DIR__ . '/includes/security.php';
+require_once __DIR__ . '/includes/env.php';
 
-// 1. HOST: Copied from "@aws-1-ap-south-1.pooler.supabase.com"
-$host = "aws-1-ap-south-1.pooler.supabase.com";
-
-// 2. PORT: Always use 6543 from the DATABASE_URL (Not 5432)
-$port = "6543";
-
-// 3. DATABASE: Copied from "/postgres"
-$db   = "postgres";
-
-// 4. USER: Copied from "postgres.olczvynzhpwnaotzjaig"
-$user = "postgres.olczvynzhpwnaotzjaig";
-
-// 5. PASSWORD: You must type the password you created when you made the project.
-// It is NOT "[YOUR-PASSWORD]". It is your actual secret password.
-$pass = "artsgymcapstone";
+// Database Configuration (Environment-driven)
+$host = getenv('SUPABASE_DB_HOST') ?: ($_SERVER['SUPABASE_DB_HOST'] ?? '');
+$port = getenv('SUPABASE_DB_PORT') ?: ($_SERVER['SUPABASE_DB_PORT'] ?? '6543');
+$db   = getenv('SUPABASE_DB_NAME') ?: ($_SERVER['SUPABASE_DB_NAME'] ?? 'postgres');
+$user = getenv('SUPABASE_DB_USER') ?: ($_SERVER['SUPABASE_DB_USER'] ?? '');
+$pass = getenv('SUPABASE_DB_PASSWORD') ?: ($_SERVER['SUPABASE_DB_PASSWORD'] ?? '');
 
 // DATA SOURCE NAME (DSN)
 // We add sslmode=require because Supabase requires a secure connection.
@@ -40,14 +32,26 @@ $options = [
 ];
 
 try {
+    if (!$host || !$user || !$pass) {
+        throw new RuntimeException('Database credentials are not configured. Create .env.local (or .env) by copying .env.example, then set SUPABASE_DB_HOST, SUPABASE_DB_USER, SUPABASE_DB_PASSWORD.');
+    }
     $pdo = new PDO($dsn, $user, $pass, $options);
     // Set PostgreSQL session timezone
     $pdo->exec("SET TIME ZONE 'Asia/Manila'");
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS settings (
+            id SERIAL PRIMARY KEY,
+            setting_key VARCHAR(255) UNIQUE NOT NULL,
+            setting_value TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ");
     // Run daily cleanup of stale records
     require_once __DIR__ . '/includes/auto_cleanup.php';
     runAutoCleanup($pdo);
     // echo "Connected successfully!"; 
-} catch (\PDOException $e) {
+} catch (\Throwable $e) {
     // If on XAMPP (Localhost), show the error.
     // If on Hostinger (Live), hide it for security.
     if ($_SERVER['SERVER_NAME'] == 'localhost' || $_SERVER['SERVER_NAME'] == '127.0.0.1') {

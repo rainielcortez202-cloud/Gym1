@@ -28,25 +28,42 @@ function runAutoCleanup(PDO $pdo): void {
     }
 
     try {
+        $getSettingDays = function(string $key, int $default) use ($pdo): int {
+            try {
+                $stmt = $pdo->prepare("SELECT setting_value FROM settings WHERE setting_key = ?");
+                $stmt->execute([$key]);
+                $val = $stmt->fetchColumn();
+                $days = is_numeric($val) ? (int)$val : $default;
+                return $days > 0 ? $days : $default;
+            } catch (Exception $e) {
+                return $default;
+            }
+        };
+
+        $activityDays = $getSettingDays('retention_activity_log_days', 90);
+        $attendanceDays = $getSettingDays('retention_attendance_days', 90);
+        $walkinsDays = $getSettingDays('retention_walkins_days', 30);
+        $unverifiedDays = $getSettingDays('retention_unverified_member_days', 7);
+
         // 1. Delete activity_log entries older than 90 days
         //    "on its 91st day" = created more than 90 full days ago
         $pdo->exec("
             DELETE FROM activity_log
-            WHERE created_at < CURRENT_TIMESTAMP - INTERVAL '90 days'
+            WHERE created_at < CURRENT_TIMESTAMP - ($activityDays || ' days')::interval
         ");
 
         // 2. Delete attendance records older than 90 days
         //    Uses attendance_date column (DATE type)
         $pdo->exec("
             DELETE FROM attendance
-            WHERE attendance_date < CURRENT_DATE - INTERVAL '90 days'
+            WHERE attendance_date < (CURRENT_DATE - ($attendanceDays || ' days')::interval)
         ");
 
         // 3. Delete walk_ins records older than 30 days
         //    Uses visit_date column (TIMESTAMP type)
         $pdo->exec("
             DELETE FROM walk_ins
-            WHERE visit_date < CURRENT_TIMESTAMP - INTERVAL '30 days'
+            WHERE visit_date < CURRENT_TIMESTAMP - ($walkinsDays || ' days')::interval
         ");
 
         // 4. Delete expired ip_login_attempts rows
@@ -64,7 +81,7 @@ function runAutoCleanup(PDO $pdo): void {
             DELETE FROM users
             WHERE role = 'member'
               AND (is_verified = FALSE OR is_verified IS NULL)
-              AND created_at < CURRENT_TIMESTAMP - INTERVAL '7 days'
+              AND created_at < CURRENT_TIMESTAMP - ($unverifiedDays || ' days')::interval
         ");
 
         // Update last run timestamp in settings
