@@ -75,6 +75,14 @@ try {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ");
+    try {
+        $seqName = $pdo->query("SELECT pg_get_serial_sequence('sales','id')")->fetchColumn();
+        if ($seqName) {
+            $maxId = (int)$pdo->query("SELECT COALESCE(MAX(id),0) FROM sales")->fetchColumn();
+            $nextVal = $maxId > 0 ? $maxId : 1;
+            $pdo->query("SELECT setval(" . $pdo->quote($seqName) . ", " . $nextVal . ", true)");
+        }
+    } catch (Exception $e) {}
     // Run daily cleanup of stale records
     require_once __DIR__ . '/includes/auto_cleanup.php';
     runAutoCleanup($pdo);
