@@ -57,7 +57,9 @@ try {
     if ($_SERVER['SERVER_NAME'] == 'localhost' || $_SERVER['SERVER_NAME'] == '127.0.0.1') {
         die("Connection Failed: " . $e->getMessage());
     } else {
-        die("System Error. Please try again later.");
+        // Log the actual error for admin review but show a generic message to user
+        error_log("DB Connection Error: " . $e->getMessage());
+        die("System Error. Please try again later. (Debug: " . $e->getMessage() . ")");
     }
 }
 
