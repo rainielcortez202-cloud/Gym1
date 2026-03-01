@@ -51,7 +51,6 @@ function showMessage(text, type){
 }
 
 let isProcessing = false;
-window.CSRF_TOKEN = <?= json_encode($_SESSION['csrf_token'] ?? '') ?>;
 
 // --- PHYSICAL SCANNER LOGIC ---
 const qrInput = document.getElementById('qr-input');
@@ -84,7 +83,8 @@ function handleScan(code) {
 
     fetch('attendance_endpoint.php', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': (window.CSRF_TOKEN || '') },
+        credentials: 'same-origin', // include session cookie
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ qr_code: code })
     })
     .then(res => res.json())
