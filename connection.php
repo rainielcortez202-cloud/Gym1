@@ -100,6 +100,48 @@ try {
         // best-effort; do not block app if this fails
         error_log('[sequence_align] ' . $e->getMessage());
     }
+    try {
+        $seqName = $pdo->query("SELECT pg_get_serial_sequence('attendance','id')")->fetchColumn();
+        if (!$seqName) {
+            $seqName = $pdo->query("
+                SELECT s.relname
+                FROM pg_class s
+                JOIN pg_depend d ON d.objid = s.oid
+                JOIN pg_class t ON d.refobjid = t.oid
+                JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid
+                WHERE s.relkind = 'S' AND t.relname = 'attendance' AND a.attname = 'id'
+                LIMIT 1
+            ")->fetchColumn();
+        }
+        if ($seqName) {
+            $maxId = (int)$pdo->query("SELECT COALESCE(MAX(id),0) FROM attendance")->fetchColumn();
+            $target = $maxId + 1;
+            $pdo->query("SELECT setval(" . $pdo->quote($seqName) . ", " . $target . ", false)");
+        }
+    } catch (Exception $e) {
+        error_log('[sequence_align_attendance] ' . $e->getMessage());
+    }
+    try {
+        $seqName = $pdo->query("SELECT pg_get_serial_sequence('walk_ins','id')")->fetchColumn();
+        if (!$seqName) {
+            $seqName = $pdo->query("
+                SELECT s.relname
+                FROM pg_class s
+                JOIN pg_depend d ON d.objid = s.oid
+                JOIN pg_class t ON d.refobjid = t.oid
+                JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid
+                WHERE s.relkind = 'S' AND t.relname = 'walk_ins' AND a.attname = 'id'
+                LIMIT 1
+            ")->fetchColumn();
+        }
+        if ($seqName) {
+            $maxId = (int)$pdo->query("SELECT COALESCE(MAX(id),0) FROM walk_ins")->fetchColumn();
+            $target = $maxId + 1;
+            $pdo->query("SELECT setval(" . $pdo->quote($seqName) . ", " . $target . ", false)");
+        }
+    } catch (Exception $e) {
+        error_log('[sequence_align_walkins] ' . $e->getMessage());
+    }
     // Run daily cleanup of stale records
     require_once __DIR__ . '/includes/auto_cleanup.php';
     runAutoCleanup($pdo);
