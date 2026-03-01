@@ -1,7 +1,6 @@
-    <?php
-    // admin/attendance.php
-    require '../auth.php';
-    require '../connection.php';
+<?php
+require '../auth.php';
+require '../connection.php';
 
     if ($_SESSION['role'] !== 'admin') {
         header("Location: ../login.php");
