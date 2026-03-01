@@ -66,7 +66,17 @@
     function handleScan(code) {
         console.log("Scanned:", code);
 
-        const endpoint = '/Gym1/admin/attendance_endpoint.php';
+        // Build endpoint that works both on local subfolder (/Gym1) and production root
+        const resolveBase = () => {
+            const p = window.location.pathname || '';
+            const match = p.match(/^(.*)\/(admin|staff|member)(\/|$)/);
+            if (match && typeof match[1] === 'string') return match[1];
+            if (p.includes('/Gym1/')) return '/Gym1';
+            return '';
+        };
+        const base = resolveBase();
+        const endpoint = `${base}/admin/attendance_endpoint.php`;
+        const loginUrl = `${base}/login.php`;
 
         showToast("Processing Scan...", "info");
 
@@ -81,16 +91,40 @@
                 'Content-Type': 'application/json',
                 ...(csrfToken ? { 'X-CSRF-TOKEN': csrfToken } : {})
             },
+            credentials: 'include',
             body: JSON.stringify({ qr_code: code })
         })
-            .then(response => {
-                return response.text().then(text => {
-                    try {
-                        return JSON.parse(text);
-                    } catch (e) {
-                        return { status: 'not_logged_in', raw: text };
+            .then(response => response.text().then(text => ({ response, text })))
+            .then(({ response, text }) => {
+                const contentType = response.headers.get('content-type') || '';
+                
+                // If the response is a redirect to login page (HTML), handle it as not logged in
+                if (response.redirected && response.url.includes('login.php')) {
+                     return { status: 'not_logged_in' };
+                }
+
+                if (!response.ok) {
+                    return { status: 'error', message: `Server error (${response.status}).` };
+                }
+                
+                // Sometimes PHP redirects manually with header('Location: ...') which fetch follows automatically.
+                // If the final URL is login.php, we are not logged in.
+                if (response.url && response.url.includes('login.php')) {
+                    return { status: 'not_logged_in' };
+                }
+                
+                if (!contentType.includes('application/json')) {
+                    // Check if the text content looks like the login page HTML
+                    if (text.includes('<!DOCTYPE html>') && (text.includes('login') || text.includes('Login'))) {
+                        return { status: 'not_logged_in' };
                     }
-                });
+                    return { status: 'error', message: 'Unexpected server response. Please refresh and try again.' };
+                }
+                try {
+                    return JSON.parse(text);
+                } catch (e) {
+                    return { status: 'error', message: 'Invalid server response. Please try again.' };
+                }
             })
             .then(data => {
                 if (data.status === 'success') {
@@ -106,7 +140,7 @@
                     showToast("Please Login to Record Attendance", "warning");
 
                     if (!window.location.href.includes('login.php')) {
-                        setTimeout(() => window.location.href = '/Gym1/login.php', 1000);
+                        setTimeout(() => window.location.href = loginUrl, 1000);
                     }
                 } else {
                     showToast(`${data.message}`, 'error');
