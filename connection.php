@@ -56,6 +56,13 @@ try {
             checked_in_by INTEGER
         )
     ");
+    // Harden schema if table already exists but with missing columns
+    $pdo->exec("ALTER TABLE walk_ins ADD COLUMN IF NOT EXISTS visitor_name VARCHAR(255)");
+    $pdo->exec("ALTER TABLE walk_ins ADD COLUMN IF NOT EXISTS amount NUMERIC(10,2) DEFAULT 0");
+    $pdo->exec("ALTER TABLE walk_ins ADD COLUMN IF NOT EXISTS visit_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
+    $pdo->exec("ALTER TABLE walk_ins ADD COLUMN IF NOT EXISTS checked_in_by INTEGER");
+    // Sales may require expires_at for membership but walk-ins set it to NULL
+    $pdo->exec("ALTER TABLE sales ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP NULL");
     $pdo->exec("ALTER TABLE attendance ADD COLUMN IF NOT EXISTS visitor_name VARCHAR(255)");
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS activity_log (
