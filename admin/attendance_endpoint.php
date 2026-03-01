@@ -21,9 +21,15 @@ function logAttendance($message) {
 
 // 3. Authorization Check
 // 3. Authorization Check
-if (!isset($_SESSION['user_id']) || !isset($_SESSION['role']) || !in_array($_SESSION['role'], ['admin', 'staff'])) {
+if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
     // Return specific status for JS to handle redirection
     echo json_encode(['status' => 'not_logged_in', 'message' => 'Please log in to record attendance.']);
+    exit;
+}
+
+if (!in_array($_SESSION['role'], ['admin', 'staff'])) {
+    // Logged in but not authorized
+    echo json_encode(['status' => 'error', 'message' => 'Unauthorized: Only Admin or Staff can record attendance.']);
     exit;
 }
 
