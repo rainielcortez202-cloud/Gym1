@@ -47,6 +47,27 @@ try {
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ");
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS walk_ins (
+            id SERIAL PRIMARY KEY,
+            visitor_name VARCHAR(255) NOT NULL,
+            amount NUMERIC(10,2) NOT NULL DEFAULT 0,
+            visit_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            checked_in_by INTEGER
+        )
+    ");
+    $pdo->exec("ALTER TABLE attendance ADD COLUMN IF NOT EXISTS visitor_name VARCHAR(255)");
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER,
+            role VARCHAR(50),
+            action VARCHAR(100),
+            details TEXT,
+            ip_address VARCHAR(45),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ");
     // Run daily cleanup of stale records
     require_once __DIR__ . '/includes/auto_cleanup.php';
     runAutoCleanup($pdo);
