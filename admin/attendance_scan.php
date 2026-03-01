@@ -294,7 +294,10 @@ header h1 { flex:1; font-size:24px; }
 <input type="text" id="qr-input" style="opacity:0; position:absolute; z-index:-1;" autocomplete="off">
 
 <script>
-function showMessage(text, type){
+    "use strict";
+    window.CSRF_TOKEN = <?= json_encode($_SESSION['csrf_token'] ?? '') ?>;
+
+    function showMessage(text, type){
     const resultDiv = document.getElementById('qr-result');
     resultDiv.innerHTML = "<div class='message "+type+"'>"+text+"</div>";
 }
