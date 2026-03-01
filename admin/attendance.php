@@ -1,7 +1,7 @@
-    <?php
-    session_start();
-    require '../auth.php';
-    require '../connection.php';
+<?php
+session_start();
+require '../auth.php';
+require '../connection.php';
 
     if ($_SESSION['role'] !== 'admin') {
         header("Location: ../login.php");
