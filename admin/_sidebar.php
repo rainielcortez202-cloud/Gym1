@@ -2,6 +2,7 @@
 <script>window.CSRF_TOKEN = <?= json_encode($_SESSION['csrf_token'] ?? '') ?>;</script>
 <link rel="stylesheet" href="../assets/css/shared_layout.css">
 <style>
+    
     /* Robust shared sidebar styling */
     .admin-shared-sidebar .sidebar {
         width: var(--sidebar-width, 260px);
