@@ -36,8 +36,8 @@ try {
     $walkin_id = $pdo->lastInsertId();
 
     // Insert corresponding sales record so admin reports reflect this walk-in
-    $sales_stmt = $pdo->prepare("INSERT INTO sales (user_id, amount, sale_date) VALUES (?, ?, NOW())");
-    // For walk-ins we record user_id as NULL to indicate non-registered sale
+    // For walk-ins we record user_id as NULL and no expiry
+    $sales_stmt = $pdo->prepare("INSERT INTO sales (user_id, amount, sale_date, expires_at) VALUES (?, ?, NOW(), NULL)");
     $sales_stmt->execute([NULL, $amount]);
 
     // RECORD TO ATTENDANCE AS WALK-IN

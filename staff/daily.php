@@ -33,7 +33,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt_walkin = $pdo->prepare("INSERT INTO walk_ins (visitor_name, amount, checked_in_by) VALUES (?, ?, ?)");
         $stmt_walkin->execute([$name, $amount, $_SESSION['user_id']]);
         
-        $stmt_sales = $pdo->prepare("INSERT INTO sales (user_id, amount, sale_date) VALUES (NULL, ?, NOW())");
+        // For walk-ins, record a sale with no associated user and no expiry
+        $stmt_sales = $pdo->prepare("INSERT INTO sales (user_id, amount, sale_date, expires_at) VALUES (NULL, ?, NOW(), NULL)");
         $stmt_sales->execute([$amount]);
 
         $stmt_att = $pdo->prepare("INSERT INTO attendance (user_id, visitor_name, date, time_in, attendance_date) VALUES (NULL, ?, CURRENT_DATE, NOW(), CURRENT_DATE)");
