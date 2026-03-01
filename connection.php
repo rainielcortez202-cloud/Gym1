@@ -75,14 +75,31 @@ try {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ");
+    // Realign sales.id sequence to avoid duplicate primary key after data imports
     try {
         $seqName = $pdo->query("SELECT pg_get_serial_sequence('sales','id')")->fetchColumn();
+        if (!$seqName) {
+            // Fallback: find identity/sequence backing 'sales.id'
+            $seqName = $pdo->query("
+                SELECT s.relname
+                FROM pg_class s
+                JOIN pg_depend d ON d.objid = s.oid
+                JOIN pg_class t ON d.refobjid = t.oid
+                JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid
+                WHERE s.relkind = 'S' AND t.relname = 'sales' AND a.attname = 'id'
+                LIMIT 1
+            ")->fetchColumn();
+        }
         if ($seqName) {
             $maxId = (int)$pdo->query("SELECT COALESCE(MAX(id),0) FROM sales")->fetchColumn();
-            $nextVal = $maxId > 0 ? $maxId : 1;
-            $pdo->query("SELECT setval(" . $pdo->quote($seqName) . ", " . $nextVal . ", true)");
+            $target = $maxId + 1;
+            // With is_called = false, next nextval() returns exactly $target
+            $pdo->query("SELECT setval(" . $pdo->quote($seqName) . ", " . $target . ", false)");
         }
-    } catch (Exception $e) {}
+    } catch (Exception $e) {
+        // best-effort; do not block app if this fails
+        error_log('[sequence_align] ' . $e->getMessage());
+    }
     // Run daily cleanup of stale records
     require_once __DIR__ . '/includes/auto_cleanup.php';
     runAutoCleanup($pdo);
