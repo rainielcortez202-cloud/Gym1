@@ -570,18 +570,6 @@ $retention_unverified_member_days = (int)$getSettingValue($pdo, 'retention_unver
                             </button>
                         </form>
 
-                        <form method="POST" class="mb-3">
-                            <?= csrf_field(); ?>
-                            <div class="row g-3">
-                                <div class="col-12">
-                                    <input type="number" min="1" name="member_id" class="form-control" placeholder="Member ID" required>
-                                </div>
-                            </div>
-                            <input type="password" name="confirm_password" class="form-control mt-3" placeholder="Confirm Admin Password" required>
-                            <button type="submit" name="anonymize_member" class="btn-dark-custom mt-3" onclick="return confirm('Anonymize this member? This cannot be undone.')">
-                                <i class="bi bi-incognito me-2"></i>Anonymize Member
-                            </button>
-                        </form>
 
                         <form method="POST">
                             <?= csrf_field(); ?>
